@@ -46,6 +46,16 @@ const TARGETS: &[Target] = &[
             ("Ribbon_Border", "Gray_1000", "#202227"),
         ],
     },
+    Target {
+        rbxm_file: "FindReplaceAll.rbxm",
+        module_name: "Dark",
+        lookup: Lookup::ByName,
+        colors: &[
+            ("FindReplace_Background", "Gray_1200", "#121215"),
+            ("FindReplace_Surface", "Gray_1100", "#191A1F"),
+            ("FindReplace_Border", "Gray_1000", "#202227"),
+        ],
+    },
 ];
 
 fn hex_to_rgb(hex: &str) -> Result<(u8, u8, u8)> {

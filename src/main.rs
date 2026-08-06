@@ -36,6 +36,9 @@ pub struct Args {
     rbxm_palette: bool,
 
     #[arg(long)]
+    watch: bool,
+
+    #[arg(long)]
     rbxm_dir: Option<String>,
 
     #[arg(long)]
@@ -120,7 +123,10 @@ fn main() -> Result<()> {
         themes::run_themes(&macho_path, &args)?;
         did_something = true;
     }
-    if args.rbxm_palette {
+    if args.watch {
+        palette::run_watch(&target, &args)?;
+        did_something = true;
+    } else if args.rbxm_palette {
         palette::run_rbxm_palette(&target, &args)?;
         did_something = true;
     }

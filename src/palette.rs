@@ -198,3 +198,30 @@ pub fn run_rbxm_palette(target: &Path, args: &Args) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn run_watch(target: &Path, args: &Args) -> Result<()> {
+    themes::ensure_theme_jsons()?;
+    let dark_json: PathBuf = themes::dark_json_path();
+    ensure_palette_defaults(&dark_json)?;
+
+    if let Err(e) = run_rbxm_palette(target, args) {
+        println!("initial apply failed ({e})");
+    }
+
+    println!("watching {} - edit RbxmPalette and save to reapply, ctrl+c to stop", dark_json.display());
+
+    let mut last_modified: std::time::SystemTime = fs::metadata(&dark_json)?.modified()?;
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let Ok(meta) = fs::metadata(&dark_json) else { continue };
+        let Ok(modified) = meta.modified() else { continue };
+        if modified == last_modified {
+            continue;
+        }
+        last_modified = modified;
+        println!("json changed, reapplying...");
+        if let Err(e) = run_rbxm_palette(target, args) {
+            println!("reapply failed ({e})");
+        }
+    }
+}

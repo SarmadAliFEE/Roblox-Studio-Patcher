@@ -42,9 +42,11 @@ edit `FoundationDarkTheme.json` and `FoundationLightTheme.json` in that folder, 
 
 ## Special plugin colors
 
-Studio's ribbon/titlebar theming (above) is Qt, but Explorer and the home screen are separate Roact plugins with colors baked into compiled Luau bytecode inside their `.rbxm` files - editing the theme jsons doesn't touch them.
+Explorer, ribbon, and find/replace all are Roact plugins, colors baked into their compiled bytecode - the theme jsons above don't touch them.
 
-`--rbxm-palette` patches those directly: reads a `RbxmPalette` block from the same theme json (added automatically with sane defaults on first run), recompiles Explorer's color module with those values, and splices the new bytecode back into `ExplorerPlugin.rbxm`. Same prompt as themes in the default run, or `--rbxm-palette` standalone. Finds the right module by instance name every time instead of a hardcoded position, so it survives studio updates reshuffling the file.
+`--rbxm-palette` patches those from a `RbxmPalette` block in the same json (auto-added with defaults). recompiles and splices straight into the `.rbxm`.
+
+these are baked in at patch time, not read live, so editing the json means running `--rbxm-palette` again. `--watch` does that for you - leave it running, save the json, it reapplies. either way still needs a full quit and reopen of studio after, same as the qt colors.
 
 ## Building from source
 

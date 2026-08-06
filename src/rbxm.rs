@@ -1,4 +1,6 @@
-use anyhow::{bail, Result};
+use std::collections::HashMap;
+
+use anyhow::{bail, Context, Result};
 
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
@@ -10,8 +12,6 @@ pub struct ChunkPos {
 }
 
 impl ChunkPos {
-    // SIGN and END aren't zstd'd at all - compressed_len sits at 0 and the
-    // real on-disk payload is uncompressed_len bytes of raw data
     fn on_disk_len(&self) -> usize {
         if self.compressed_len == 0 {
             self.uncompressed_len
@@ -77,8 +77,6 @@ pub struct PropChunk {
     pub entries: Vec<Vec<u8>>,
 }
 
-// only String(1) and ProtectedString(29) use this length-prefixed layout,
-// other property types are fixed-width and need their own parser
 pub fn parse_prop_chunk(bytes: &[u8]) -> Result<PropChunk> {
     if bytes.len() < 9 {
         bail!("prop chunk too short to have a header");
@@ -159,9 +157,6 @@ fn find_class_index(data: &[u8], chunks: &[ChunkPos], class_name: &str) -> Resul
     bail!("no {class_name:?} class in this rbxm")
 }
 
-// properties are stored as one array per class, all indexed the same way -
-// so the Nth entry in the "Name" array and the Nth entry in "Source" describe
-// the same instance. find where Name == module_name and reuse that index.
 fn find_entry_index(
     data: &[u8],
     chunks: &[ChunkPos],
@@ -187,23 +182,16 @@ fn find_entry_index(
     bail!("no instance named {:?} found in class index {class_index}", String::from_utf8_lossy(needle))
 }
 
-// locates a specific named ModuleScript's compiled Source and swaps it for new
-// bytecode. offsets shift version to version so nothing here is hardcoded -
-// class index comes from INST, instance index comes from matching Name, and
-// sanity_markers is a last check that we didn't land on the wrong thing
-pub fn patch_module_by_name(
+fn patch_entry_at(
     data: &[u8],
-    class_name: &str,
-    module_name: &str,
+    chunks: &[ChunkPos],
+    class_index: i32,
     property_name: &str,
+    target_idx: usize,
     sanity_markers: &[&str],
     new_bytecode: &[u8],
 ) -> Result<Vec<u8>> {
-    let chunks: Vec<ChunkPos> = list_chunks(data)?;
-    let class_index: i32 = find_class_index(data, &chunks, class_name)?;
-    let target_idx: usize = find_entry_index(data, &chunks, class_index, "Name", module_name.as_bytes())?;
-
-    for chunk in &chunks {
+    for chunk in chunks {
         if &chunk.tag != b"PROP" {
             continue;
         }
@@ -219,8 +207,8 @@ pub fn patch_module_by_name(
         };
         if !sanity_markers.iter().all(|m: &&str| contains(entry, m.as_bytes())) {
             bail!(
-                "found {module_name:?} but its {property_name:?} doesn't look like what we expect, \
-                 roblox may have changed this module - refusing to patch blind"
+                "found the target module but its {property_name:?} doesn't look like what we expect, \
+                 roblox may have changed this module - refusing to patch blind, report this"
             );
         }
 
@@ -229,5 +217,191 @@ pub fn patch_module_by_name(
         let new_payload: Vec<u8> = serialize_prop_chunk(&patched);
         return rebuild_chunk(data, chunk, &new_payload);
     }
-    bail!("no {property_name:?} property chunk for class {class_name:?}")
+    bail!("no {property_name:?} property chunk for class index {class_index}")
+}
+
+pub fn patch_module_by_name(
+    data: &[u8],
+    class_name: &str,
+    module_name: &str,
+    property_name: &str,
+    sanity_markers: &[&str],
+    new_bytecode: &[u8],
+) -> Result<Vec<u8>> {
+    let chunks: Vec<ChunkPos> = list_chunks(data)?;
+    let class_index: i32 = find_class_index(data, &chunks, class_name)?;
+    let target_idx: usize = find_entry_index(data, &chunks, class_index, "Name", module_name.as_bytes())?;
+    patch_entry_at(data, &chunks, class_index, property_name, target_idx, sanity_markers, new_bytecode)
+}
+
+fn zigzag_decode(word: u32) -> i32 {
+    ((word >> 1) as i32) ^ -((word & 1) as i32)
+}
+
+fn read_referents(raw: &[u8], count: usize) -> Vec<i32> {
+    let mut out: Vec<i32> = Vec::with_capacity(count);
+    let mut acc: i32 = 0;
+    for i in 0..count {
+        let b0: u32 = raw[i] as u32;
+        let b1: u32 = raw[count + i] as u32;
+        let b2: u32 = raw[2 * count + i] as u32;
+        let b3: u32 = raw[3 * count + i] as u32;
+        let word: u32 = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+        acc = acc.wrapping_add(zigzag_decode(word));
+        out.push(acc);
+    }
+    out
+}
+
+struct Referents {
+    class_arrays: HashMap<i32, Vec<i32>>, // class_index -> referents in per-class array order
+    parents: HashMap<i32, i32>,           // child referent -> parent referent, -1 = root
+}
+
+fn build_referents(data: &[u8], chunks: &[ChunkPos]) -> Result<Referents> {
+    let mut class_arrays: HashMap<i32, Vec<i32>> = HashMap::new();
+    let mut parents: HashMap<i32, i32> = HashMap::new();
+
+    for chunk in chunks {
+        if &chunk.tag == b"INST" {
+            let d: Vec<u8> = decompress_chunk(data, chunk)?;
+            if d.len() < 8 {
+                continue;
+            }
+            let class_index: i32 = i32::from_le_bytes(d[0..4].try_into().unwrap());
+            let name_len: usize = i32::from_le_bytes(d[4..8].try_into().unwrap()) as usize;
+            let mut p: usize = 8 + name_len;
+            if p >= d.len() {
+                continue;
+            }
+            p += 1; // is_service flag
+            if p + 4 > d.len() {
+                continue;
+            }
+            let instance_count: usize = i32::from_le_bytes(d[p..p + 4].try_into().unwrap()) as usize;
+            p += 4;
+            if p + 4 * instance_count > d.len() {
+                continue;
+            }
+            class_arrays.insert(class_index, read_referents(&d[p..p + 4 * instance_count], instance_count));
+        }
+        if &chunk.tag == b"PRNT" {
+            let d: Vec<u8> = decompress_chunk(data, chunk)?;
+            if d.len() < 5 {
+                continue;
+            }
+            let count: usize = u32::from_le_bytes(d[1..5].try_into().unwrap()) as usize;
+            let mut p: usize = 5;
+            if p + 8 * count > d.len() {
+                continue;
+            }
+            let children: Vec<i32> = read_referents(&d[p..p + 4 * count], count);
+            p += 4 * count;
+            let parent_refs: Vec<i32> = read_referents(&d[p..p + 4 * count], count);
+            for i in 0..count {
+                parents.insert(children[i], parent_refs[i]);
+            }
+        }
+    }
+
+    Ok(Referents { class_arrays, parents })
+}
+
+impl Referents {
+    fn referent_for(&self, class_index: i32, array_index: usize) -> Option<i32> {
+        self.class_arrays.get(&class_index)?.get(array_index).copied()
+    }
+
+    fn name_of(&self, referent: i32, data: &[u8], chunks: &[ChunkPos]) -> Result<Option<String>> {
+        for (&class_index, referents) in &self.class_arrays {
+            let Some(array_index) = referents.iter().position(|&r| r == referent) else {
+                continue;
+            };
+            for chunk in chunks {
+                if &chunk.tag != b"PROP" {
+                    continue;
+                }
+                let d: Vec<u8> = decompress_chunk(data, chunk)?;
+                let Ok(prop) = parse_prop_chunk(&d) else {
+                    continue;
+                };
+                if prop.class_index != class_index || prop.name != "Name" {
+                    continue;
+                }
+                return Ok(prop.entries.get(array_index).map(|e| String::from_utf8_lossy(e).into_owned()));
+            }
+            return Ok(None);
+        }
+        Ok(None)
+    }
+
+    fn has_ancestor_named(&self, referent: i32, ancestor_name: &str, data: &[u8], chunks: &[ChunkPos]) -> Result<bool> {
+        let mut cur: i32 = referent;
+        let mut seen: std::collections::HashSet<i32> = std::collections::HashSet::new();
+        loop {
+            if !seen.insert(cur) {
+                return Ok(false); // cycle guard, shouldn't happen in a real file
+            }
+            let Some(&parent) = self.parents.get(&cur) else {
+                return Ok(false);
+            };
+            if parent == -1 {
+                return Ok(false);
+            }
+            if self.name_of(parent, data, chunks)?.as_deref() == Some(ancestor_name) {
+                return Ok(true);
+            }
+            cur = parent;
+        }
+    }
+}
+
+pub fn patch_module_by_path(
+    data: &[u8],
+    class_name: &str,
+    module_name: &str,
+    required_ancestor: &str,
+    property_name: &str,
+    sanity_markers: &[&str],
+    new_bytecode: &[u8],
+) -> Result<Vec<u8>> {
+    let chunks: Vec<ChunkPos> = list_chunks(data)?;
+    let class_index: i32 = find_class_index(data, &chunks, class_name)?;
+    let refs: Referents = build_referents(data, &chunks)?;
+
+    let mut candidates: Vec<usize> = vec![];
+    for chunk in &chunks {
+        if &chunk.tag != b"PROP" {
+            continue;
+        }
+        let d: Vec<u8> = decompress_chunk(data, chunk)?;
+        let Ok(prop) = parse_prop_chunk(&d) else {
+            continue;
+        };
+        if prop.class_index != class_index || prop.name != "Name" {
+            continue;
+        }
+        for (idx, entry) in prop.entries.iter().enumerate() {
+            if entry.as_slice() == module_name.as_bytes() {
+                candidates.push(idx);
+            }
+        }
+    }
+
+    let mut target_idx: Option<usize> = None;
+    for idx in candidates {
+        let Some(referent) = refs.referent_for(class_index, idx) else {
+            continue;
+        };
+        if refs.has_ancestor_named(referent, required_ancestor, data, &chunks)? {
+            if target_idx.is_some() {
+                bail!("more than one {module_name:?} under {required_ancestor:?}, can't tell which one to patch");
+            }
+            target_idx = Some(idx);
+        }
+    }
+    let target_idx: usize = target_idx
+        .with_context(|| format!("no {module_name:?} found under an ancestor named {required_ancestor:?}"))?;
+
+    patch_entry_at(data, &chunks, class_index, property_name, target_idx, sanity_markers, new_bytecode)
 }

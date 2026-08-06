@@ -78,10 +78,10 @@ fn run_auto(target: &std::path::Path, macho_path: &std::path::Path, args: &Args)
         }
     }
 
-    println!("explorer's colors are baked into its plugin bytecode separately from the qt theme");
-    if ask_yn("also patch explorer's baked-in palette from the same theme json?") {
+    println!("certain plugins have their own colors baked into plugin bytecode, separate from the qt theme");
+    if ask_yn("also apply the RbxmPalette colors from the same theme json?") {
         if let Err(e) = palette::run_rbxm_palette(target, args) {
-            println!("explorer palette patch failed ({e})");
+            println!("rbxm palette patch failed ({e})");
         }
     }
     Ok(())

@@ -13,12 +13,39 @@ use crate::Args;
 
 const DARK_TOKENS_TEMPLATE: &str = include_str!("../assets/dark_tokens.lua");
 
-// (json key the user actually edits, internal luau token name, stock hex)
-// darkest first - Explorer_Background is the actual panel background
-const PALETTE_MAP: [(&str, &str, &str); 3] = [
-    ("Explorer_Background", "Gray_1200", "#121215"),
-    ("Explorer_Surface", "Gray_1100", "#191A1F"),
-    ("Explorer_Border", "Gray_1000", "#202227"),
+enum Lookup {
+    ByName,
+    ByPath(&'static str),
+}
+
+struct Target {
+    rbxm_file: &'static str,
+    module_name: &'static str,
+    lookup: Lookup,
+    colors: &'static [(&'static str, &'static str, &'static str)],
+}
+
+const TARGETS: &[Target] = &[
+    Target {
+        rbxm_file: "ExplorerPlugin.rbxm",
+        module_name: "Dark",
+        lookup: Lookup::ByName,
+        colors: &[
+            ("Explorer_Background", "Gray_1200", "#121215"),
+            ("Explorer_Surface", "Gray_1100", "#191A1F"),
+            ("Explorer_Border", "Gray_1000", "#202227"),
+        ],
+    },
+    Target {
+        rbxm_file: "Ribbon.rbxm",
+        module_name: "Dark",
+        lookup: Lookup::ByPath("RbxDesignFoundations-31ab8d40-2.0.163"),
+        colors: &[
+            ("Ribbon_Background", "Gray_1200", "#121215"),
+            ("Ribbon_Surface", "Gray_1100", "#191A1F"),
+            ("Ribbon_Border", "Gray_1000", "#202227"),
+        ],
+    },
 ];
 
 fn hex_to_rgb(hex: &str) -> Result<(u8, u8, u8)> {
@@ -32,9 +59,6 @@ fn hex_to_rgb(hex: &str) -> Result<(u8, u8, u8)> {
     Ok((r, g, b))
 }
 
-// backfills whatever RbxmPalette entries are missing (whole section, or just
-// individual keys someone deleted) so the json always has something valid to
-// read, whether this is a first run or the section's just gone stale
 pub fn ensure_palette_defaults(json_path: &Path) -> Result<()> {
     let raw: String = fs::read_to_string(json_path)?;
     let mut doc: Value = serde_json::from_str(&raw)?;
@@ -45,10 +69,12 @@ pub fn ensure_palette_defaults(json_path: &Path) -> Result<()> {
     let palette_obj: &mut serde_json::Map<String, Value> = palette.as_object_mut().context("RbxmPalette isn't an object")?;
 
     let mut changed: bool = false;
-    for (json_key, _, hex) in PALETTE_MAP {
-        if !palette_obj.contains_key(json_key) {
-            palette_obj.insert(json_key.to_string(), json!(hex));
-            changed = true;
+    for t in TARGETS {
+        for (json_key, _, hex) in t.colors {
+            if !palette_obj.contains_key(*json_key) {
+                palette_obj.insert(json_key.to_string(), json!(hex));
+                changed = true;
+            }
         }
     }
 
@@ -58,22 +84,9 @@ pub fn ensure_palette_defaults(json_path: &Path) -> Result<()> {
     Ok(())
 }
 
-// returns luau token name -> rgb, translated from the human-friendly json keys
-fn read_palette(json_path: &Path) -> Result<HashMap<String, (u8, u8, u8)>> {
-    let raw: String = fs::read_to_string(json_path)?;
-    let doc: Value = serde_json::from_str(&raw)?;
-    let palette: &Value = doc
-        .get("RbxmPalette")
-        .context("no RbxmPalette section in theme json")?;
-    let obj: &serde_json::Map<String, Value> = palette.as_object().context("RbxmPalette isn't an object")?;
-
-    let mut out: HashMap<String, (u8, u8, u8)> = HashMap::new();
-    for (json_key, lua_token, _) in PALETTE_MAP {
-        let Some(value) = obj.get(json_key) else { continue };
-        let hex: &str = value.as_str().with_context(|| format!("{json_key} isn't a string"))?;
-        out.insert(lua_token.to_string(), hex_to_rgb(hex)?);
-    }
-    Ok(out)
+fn json_hex(obj: &serde_json::Map<String, Value>, json_key: &str) -> Result<String> {
+    let value: &Value = obj.get(json_key).with_context(|| format!("no {json_key:?} in RbxmPalette"))?;
+    Ok(value.as_str().with_context(|| format!("{json_key} isn't a string"))?.to_string())
 }
 
 fn build_source(colors: &HashMap<String, (u8, u8, u8)>) -> String {
@@ -111,37 +124,67 @@ pub fn plugins_dir(target: &Path) -> Result<PathBuf> {
         .context("couldn't find BuiltInStandalonePlugins next to studio, pass --rbxm-dir")
 }
 
+fn patch_target(dir: &Path, obj: &serde_json::Map<String, Value>, t: &Target, args: &Args) -> Result<()> {
+    let rbxm_path: PathBuf = dir.join(t.rbxm_file);
+    if !rbxm_path.exists() {
+        bail!("no {} at {}", t.rbxm_file, rbxm_path.display());
+    }
+    if args.dry_run {
+        println!("dry run - would patch {}", rbxm_path.display());
+        return Ok(());
+    }
+
+    let mut colors: HashMap<String, (u8, u8, u8)> = HashMap::new();
+    for (json_key, lua_field, _) in t.colors {
+        colors.insert(lua_field.to_string(), hex_to_rgb(&json_hex(obj, json_key)?)?);
+    }
+    let markers: Vec<&str> = t.colors.iter().map(|(_, lua_field, _)| *lua_field).collect();
+    let source: String = build_source(&colors);
+    let bytecode: Vec<u8> = compile_lua(&source)?;
+
+    let data: Vec<u8> = fs::read(&rbxm_path)?;
+    let patched: Vec<u8> = match t.lookup {
+        Lookup::ByName => rbxm::patch_module_by_name(&data, "ModuleScript", t.module_name, "Source", &markers, &bytecode)?,
+        Lookup::ByPath(ancestor) => {
+            rbxm::patch_module_by_path(&data, "ModuleScript", t.module_name, ancestor, "Source", &markers, &bytecode)?
+        }
+    };
+
+    if !args.no_backup {
+        backup(&rbxm_path)?;
+    }
+    fs::write(&rbxm_path, patched)?;
+    println!("patched {}", t.rbxm_file);
+    Ok(())
+}
+
 pub fn run_rbxm_palette(target: &Path, args: &Args) -> Result<()> {
     let dir: PathBuf = match &args.rbxm_dir {
         Some(p) => PathBuf::from(p),
         None => plugins_dir(target)?,
     };
-    let explorer_path: PathBuf = dir.join("ExplorerPlugin.rbxm");
-    if !explorer_path.exists() {
-        bail!("no ExplorerPlugin.rbxm at {}", explorer_path.display());
-    }
-
-    if args.dry_run {
-        println!("dry run - would patch {}", explorer_path.display());
-        return Ok(());
-    }
 
     themes::ensure_theme_jsons()?;
     let dark_json: PathBuf = themes::dark_json_path();
     ensure_palette_defaults(&dark_json)?;
-    let colors: HashMap<String, (u8, u8, u8)> = read_palette(&dark_json)?;
 
-    let markers: Vec<&str> = PALETTE_MAP.iter().map(|(_, lua_token, _)| *lua_token).collect();
-    let source: String = build_source(&colors);
-    let bytecode: Vec<u8> = compile_lua(&source)?;
+    let raw: String = fs::read_to_string(&dark_json)?;
+    let doc: Value = serde_json::from_str(&raw)?;
+    let obj: &serde_json::Map<String, Value> = doc
+        .get("RbxmPalette")
+        .and_then(Value::as_object)
+        .context("no RbxmPalette section in theme json")?;
 
-    let data: Vec<u8> = fs::read(&explorer_path)?;
-    let patched: Vec<u8> = rbxm::patch_module_by_name(&data, "ModuleScript", "Dark", "Source", &markers, &bytecode)?;
-
-    if !args.no_backup {
-        backup(&explorer_path)?;
+    let mut any_ok: bool = false;
+    for t in TARGETS {
+        match patch_target(&dir, obj, t, args) {
+            Ok(()) => any_ok = true,
+            Err(e) => println!("{} skipped ({e})", t.rbxm_file),
+        }
     }
-    fs::write(&explorer_path, patched)?;
-    println!("patched explorer palette from {}", dark_json.display());
+
+    if any_ok && !args.dry_run {
+        println!("colors pulled from {}", dark_json.display());
+    }
     Ok(())
 }

@@ -30,6 +30,8 @@ just run it, no install needed. finds your Studio install under `%LOCALAPPDATA%\
 
 A backup of the original binary is made before every patch (next to the original, `.bak-<timestamp>` on mac / same idea on windows).
 
+Checks for a newer release on every plain run and asks before installing (`--update` to just do that and nothing else). Says no, keeps going with what you've got.
+
 ## Custom themes
 
 The default run asks if you want this too, or just run it standalone with `--themes`.
@@ -38,6 +40,12 @@ redirects studio's theme jsons to a folder on disk instead of loading them baked
 
 edit `FoundationDarkTheme.json` and `FoundationLightTheme.json` in that folder, whichever one studio's actually using, then just relaunch studio to see it
 
+## Special plugin colors
+
+Studio's ribbon/titlebar theming (above) is Qt, but Explorer and the home screen are separate Roact plugins with colors baked into compiled Luau bytecode inside their `.rbxm` files - editing the theme jsons doesn't touch them.
+
+`--rbxm-palette` patches those directly: reads a `RbxmPalette` block from the same theme json (added automatically with sane defaults on first run), recompiles Explorer's color module with those values, and splices the new bytecode back into `ExplorerPlugin.rbxm`. Same prompt as themes in the default run, or `--rbxm-palette` standalone. Finds the right module by instance name every time instead of a hardcoded position, so it survives studio updates reshuffling the file.
+
 ## Building from source
 
 ```bash
@@ -45,7 +53,7 @@ cargo build --release
 ./target/release/studio-patcher
 ```
 
-for a windows build from mac/linux you need the target + mingw (`rustup target add x86_64-pc-windows-gnu`, `brew install mingw-w64`), then `cargo build --release --target x86_64-pc-windows-gnu`.
+for a windows build from mac/linux you need the target + mingw (`rustup target add x86_64-pc-windows-gnu`, `brew install mingw-w64`), then `cargo build --release --target x86_64-pc-windows-gnu`. the repo's `.cargo/config.toml` routes that build through `scripts/mingw-link-wrapper.sh` so the bundled Luau compiler links statically - without it the exe would need `libstdc++-6.dll` next to it to run.
 
 ## Issues
 

@@ -1,2 +1,5 @@
 /target
 rr.sh
+/backups
+/webview-inspector
+/ghidra

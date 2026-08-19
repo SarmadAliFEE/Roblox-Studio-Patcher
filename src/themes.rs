@@ -25,11 +25,38 @@ pub fn editor_background_json_path() -> PathBuf {
     Path::new(THEMES_DIR).join("EditorBackground.json")
 }
 
+pub fn window_transparency_json_path() -> PathBuf {
+    Path::new(THEMES_DIR).join("WindowTransparency.json")
+}
+
 const EDITOR_BACKGROUND_DEFAULTS: &str = concat!(
     "{\n",
     "    \"enabled\": true,\n",
     "    \"image\": \"\",\n",
     "    \"opacity\": 0.15\n",
+    "}\n",
+);
+
+#[cfg(target_os = "windows")]
+const WINDOW_TRANSPARENCY_DEFAULTS: &str = concat!(
+    "{\n",
+    "    \"enabled\": true,\n",
+    "    \"opacity\": 1.0,\n",
+    "    \"step\": 0.05,\n",
+    "    \"minOpacity\": 0.2,\n",
+    "    \"increaseHotkey\": \"alt+=\",\n",
+    "    \"decreaseHotkey\": \"alt+-\"\n",
+    "}\n",
+);
+#[cfg(not(target_os = "windows"))]
+const WINDOW_TRANSPARENCY_DEFAULTS: &str = concat!(
+    "{\n",
+    "    \"enabled\": true,\n",
+    "    \"opacity\": 1.0,\n",
+    "    \"step\": 0.05,\n",
+    "    \"minOpacity\": 0.2,\n",
+    "    \"increaseHotkey\": \"ctrl+=\",\n",
+    "    \"decreaseHotkey\": \"ctrl+-\"\n",
     "}\n",
 );
 
@@ -60,6 +87,15 @@ pub fn ensure_theme_jsons() -> Result<()> {
         println!(
             "created {} - set \"image\" to an absolute path to enable a custom script editor background",
             editor_bg.display()
+        );
+    }
+
+    let window_transparency: PathBuf = window_transparency_json_path();
+    if !window_transparency.exists() {
+        fs::write(&window_transparency, WINDOW_TRANSPARENCY_DEFAULTS)?;
+        println!(
+            "created {} - hotkeys adjust studio's window opacity",
+            window_transparency.display()
         );
     }
     Ok(())

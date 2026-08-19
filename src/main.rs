@@ -114,6 +114,13 @@ fn run_auto(target: &std::path::Path, macho_path: &std::path::Path, args: &Args)
             println!("hook install failed ({e})");
         }
     }
+
+    println!("another hook: hotkeys to fade studio's whole window in/out");
+    if ask_yn("enable window transparency hotkeys?") {
+        if let Err(e) = hooks::install_window_transparency(macho_path, args) {
+            println!("hook install failed ({e})");
+        }
+    }
     Ok(())
 }
 

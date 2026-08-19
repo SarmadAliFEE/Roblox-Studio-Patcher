@@ -52,7 +52,10 @@ these are baked in at patch time, not read live, so editing the json means runni
 
 `--inject path/to/thing.dylib` (mac) or `.dll` (windows) loads a native hook into Studio at launch - patches the binary's import table, doesn't touch running memory.
 
-Right now there's one hook, on both platforms: a custom image behind the script editor (`hooks/editor_background.mm` / `hooks/editor_background_windows.cpp`). The tool builds and injects it for you - just answer yes when it asks. Configure it via `EditorBackground.json` in the same theme-set folder as above. Leave `image` blank and it's a no-op - studio paints normally.
+Two hooks right now, both on mac and windows. The tool builds and injects them for you - just answer yes when it asks.
+
+- custom image behind the script editor. `EditorBackground.json` in the theme-set folder above, leave `image` blank and it's a no-op.
+- hotkeys to fade studio's whole window in/out. `WindowTransparency.json` in the same folder - defaults to ctrl+=/ctrl+- on mac, alt+=/alt+- on windows, both changeable there.
 
 ## Building from source
 

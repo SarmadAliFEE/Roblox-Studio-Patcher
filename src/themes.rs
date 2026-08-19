@@ -21,6 +21,18 @@ pub fn light_json_path() -> PathBuf {
     Path::new(THEMES_DIR).join("FoundationLightTheme.json")
 }
 
+pub fn editor_background_json_path() -> PathBuf {
+    Path::new(THEMES_DIR).join("EditorBackground.json")
+}
+
+const EDITOR_BACKGROUND_DEFAULTS: &str = concat!(
+    "{\n",
+    "    \"enabled\": true,\n",
+    "    \"image\": \"\",\n",
+    "    \"opacity\": 0.15\n",
+    "}\n",
+);
+
 pub fn ensure_theme_jsons() -> Result<()> {
     fs::create_dir_all(THEMES_DIR)?;
     for name in ["FoundationDarkTheme.json", "FoundationLightTheme.json"] {
@@ -40,6 +52,15 @@ pub fn ensure_theme_jsons() -> Result<()> {
         if !ok {
             bail!("couldn't grab {name}, drop your own copy in {THEMES_DIR}");
         }
+    }
+
+    let editor_bg: PathBuf = editor_background_json_path();
+    if !editor_bg.exists() {
+        fs::write(&editor_bg, EDITOR_BACKGROUND_DEFAULTS)?;
+        println!(
+            "created {} - set \"image\" to an absolute path to enable a custom script editor background",
+            editor_bg.display()
+        );
     }
     Ok(())
 }

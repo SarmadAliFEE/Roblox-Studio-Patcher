@@ -134,7 +134,7 @@ pub fn plugins_dir(target: &Path) -> Result<PathBuf> {
         .context("couldn't find BuiltInStandalonePlugins next to studio, pass --rbxm-dir")
 }
 
-fn patch_target(dir: &Path, obj: &serde_json::Map<String, Value>, t: &Target, args: &Args) -> Result<()> {
+fn patch_target(dir: &Path, obj: &serde_json::Map<String, Value>, t: &Target, args: &Args, do_backup: bool) -> Result<()> {
     let rbxm_path: PathBuf = dir.join(t.rbxm_file);
     if !rbxm_path.exists() {
         bail!("no {} at {}", t.rbxm_file, rbxm_path.display());
@@ -160,15 +160,21 @@ fn patch_target(dir: &Path, obj: &serde_json::Map<String, Value>, t: &Target, ar
         }
     };
 
-    if !args.no_backup {
+    if do_backup {
         backup(&rbxm_path)?;
     }
-    fs::write(&rbxm_path, patched)?;
+
+    fs::write(&rbxm_path, patched).with_context(|| {
+        format!(
+            "couldn't write {} - if studio is running, close it first (windows keeps loaded plugin files locked)",
+            rbxm_path.display()
+        )
+    })?;
     println!("patched {}", t.rbxm_file);
     Ok(())
 }
 
-pub fn run_rbxm_palette(target: &Path, args: &Args) -> Result<()> {
+fn run_rbxm_palette_inner(target: &Path, args: &Args, do_backup: bool) -> Result<()> {
     let dir: PathBuf = match &args.rbxm_dir {
         Some(p) => PathBuf::from(p),
         None => plugins_dir(target)?,
@@ -187,7 +193,7 @@ pub fn run_rbxm_palette(target: &Path, args: &Args) -> Result<()> {
 
     let mut any_ok: bool = false;
     for t in TARGETS {
-        match patch_target(&dir, obj, t, args) {
+        match patch_target(&dir, obj, t, args, do_backup) {
             Ok(()) => any_ok = true,
             Err(e) => println!("{} skipped ({e})", t.rbxm_file),
         }
@@ -197,6 +203,10 @@ pub fn run_rbxm_palette(target: &Path, args: &Args) -> Result<()> {
         println!("colors pulled from {}", dark_json.display());
     }
     Ok(())
+}
+
+pub fn run_rbxm_palette(target: &Path, args: &Args) -> Result<()> {
+    run_rbxm_palette_inner(target, args, !args.no_backup)
 }
 
 pub fn run_watch(target: &Path, args: &Args) -> Result<()> {
@@ -211,6 +221,7 @@ pub fn run_watch(target: &Path, args: &Args) -> Result<()> {
     println!("watching {} - edit RbxmPalette and save to reapply, ctrl+c to stop", dark_json.display());
 
     let mut last_modified: std::time::SystemTime = fs::metadata(&dark_json)?.modified()?;
+    let mut consecutive_failures: u32 = 0;
     loop {
         std::thread::sleep(std::time::Duration::from_millis(500));
         let Ok(meta) = fs::metadata(&dark_json) else { continue };
@@ -220,8 +231,16 @@ pub fn run_watch(target: &Path, args: &Args) -> Result<()> {
         }
         last_modified = modified;
         println!("json changed, reapplying...");
-        if let Err(e) = run_rbxm_palette(target, args) {
-            println!("reapply failed ({e})");
+
+        match run_rbxm_palette_inner(target, args, false) {
+            Ok(()) => consecutive_failures = 0,
+            Err(e) => {
+                consecutive_failures += 1;
+                println!("reapply failed ({e})");
+                if consecutive_failures == 3 {
+                    println!("still failing - if studio is running, close it and save the json again to retry");
+                }
+            }
         }
     }
 }

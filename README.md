@@ -48,6 +48,12 @@ Explorer, ribbon, and find/replace all are Roact plugins, colors baked into thei
 
 these are baked in at patch time, not read live, so editing the json means running `--rbxm-palette` again. `--watch` does that for you - leave it running, save the json, it reapplies. either way still needs a full quit and reopen of studio after, same as the qt colors.
 
+## Native hooks
+
+`--inject path/to/thing.dylib` (mac) or `.dll` (windows) loads a native hook into Studio at launch - patches the binary's import table, doesn't touch running memory.
+
+Right now there's one hook, on both platforms: a custom image behind the script editor (`hooks/editor_background.mm` / `hooks/editor_background_windows.cpp`). The tool builds and injects it for you - just answer yes when it asks. Configure it via `EditorBackground.json` in the same theme-set folder as above. Leave `image` blank and it's a no-op - studio paints normally.
+
 ## Building from source
 
 ```bash

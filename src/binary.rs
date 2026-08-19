@@ -7,11 +7,13 @@ use anyhow::{bail, Context, Result};
 
 use crate::Args;
 
+/// One byte of a match pattern: a fixed value or a wildcard.
 pub enum PatByte {
     Exact(u8),
     Wild,
 }
 
+/// Parses a space-separated hex byte pattern, "??" as wildcard if allowed.
 pub fn parse_pattern(s: &str, allow_wild: bool) -> Result<Vec<PatByte>> {
     let mut out: Vec<PatByte> = vec![];
     for tok in s.split_whitespace() {
@@ -29,6 +31,7 @@ pub fn parse_pattern(s: &str, allow_wild: bool) -> Result<Vec<PatByte>> {
     Ok(out)
 }
 
+/// Finds every offset in `haystack` where `pattern` matches.
 pub fn find_matches(haystack: &[u8], pattern: &[PatByte]) -> Vec<usize> {
     if pattern.is_empty() || haystack.len() < pattern.len() {
         return vec![];
@@ -46,6 +49,7 @@ pub fn find_matches(haystack: &[u8], pattern: &[PatByte]) -> Vec<usize> {
     hits
 }
 
+/// Finds the newest Roblox Studio install under %LOCALAPPDATA%\Roblox\Versions.
 #[cfg(target_os = "windows")]
 pub fn discover_binary() -> Result<PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA").context("no LOCALAPPDATA env var")?;
@@ -66,6 +70,7 @@ pub fn discover_binary() -> Result<PathBuf> {
         .context("no RobloxStudioBeta.exe under Roblox/Versions, pass --binary")
 }
 
+/// Finds the Roblox Studio.app install in the usual mac locations.
 #[cfg(not(target_os = "windows"))]
 pub fn discover_binary() -> Result<PathBuf> {
     for c in [
@@ -92,11 +97,11 @@ pub fn discover_binary() -> Result<PathBuf> {
         .context("couldn't find RobloxStudio.app, pass --binary")
 }
 
+/// Resolves an .app bundle to its actual executable via CFBundleExecutable.
 pub fn resolve_macho(path: &Path) -> Result<PathBuf> {
     if path.extension().and_then(|e| e.to_str()) != Some("app") {
         return Ok(path.to_path_buf());
     }
-    // can't just grab the first entry, gotta read the actual bundle exec name
     let plist = path.join("Contents/Info.plist");
     let out: std::process::Output = Command::new("defaults")
         .args(["read", &plist.to_string_lossy(), "CFBundleExecutable"])
@@ -152,7 +157,6 @@ struct PeSection {
     filesize: u64,
 }
 
-// image base + every section header, so we can map RVA<->file offset anywhere
 fn pe_sections(data: &[u8]) -> Result<(u64, Vec<PeSection>)> {
     if !is_pe(data) {
         bail!("not a PE file (no MZ magic)");
@@ -208,20 +212,19 @@ fn is_cmp_byte_rip(bytes: &[u8]) -> Option<i32> {
 }
 
 fn is_lea_rip(bytes: &[u8]) -> Option<(u8, i32)> {
-    // REX.W (48 or 4C for r8-r15 dest) + 8D /r, modrm mod=00 rm=101 (rip-relative)
     if bytes.len() < 7 {
         return None;
     }
     let rex: u8 = bytes[0];
     if rex & 0xFB != 0x48 {
-        return None; // must be 0x48 or 0x4c (REX.W, optionally +REX.R)
+        return None;
     }
     if bytes[1] != 0x8D {
         return None;
     }
     let modrm: u8 = bytes[2];
     if modrm & 0xC7 != 0x05 {
-        return None; // mod=00, rm=101
+        return None;
     }
     let reg: u8 = ((modrm >> 3) & 0x7) | if rex & 0x4 != 0 { 0x8 } else { 0 };
     let disp: i32 = i32::from_le_bytes(bytes[3..7].try_into().unwrap());
@@ -257,7 +260,6 @@ fn discover_via_anchor_pe(data: &[u8], anchor: &str) -> Result<Vec<u64>> {
             None => continue,
         };
 
-        // find every rip-relative lea in .text resolving to the string's address
         let mut ref_sites: Vec<usize> = vec![];
         let mut i: usize = text_start;
         while i + 7 <= text_end {
@@ -279,7 +281,6 @@ fn discover_via_anchor_pe(data: &[u8], anchor: &str) -> Result<Vec<u64>> {
                     let candidate: u64 = (next_va as i64 + disp as i64) as u64;
                     if let Some(mut cand_off) = pe_va_to_fileoff(&sections, image_base, candidate) {
                         if (candidate >= image_base + text.vaddr) && (candidate < image_base + text.vaddr + text.vsize) {
-                            // follow a jmp-thunk if that's all that's there
                             for _hop in 0..4 {
                                 let cur: usize = cand_off as usize;
                                 if cur + 5 > data.len() {
@@ -360,7 +361,7 @@ fn scan_globals_pe(data: &[u8], globals: &[u64]) -> Result<Vec<usize>> {
                 let next_va: u64 = pe_fileoff_to_va(&sections, image_base, (i + 7) as u64).unwrap_or(0);
                 let target: u64 = (next_va as i64 + disp as i64) as u64;
                 if globals.contains(&target) {
-                    out.push(i + 6); // offset of the trailing immediate byte
+                    out.push(i + 6);
                 }
             }
         }
@@ -369,7 +370,6 @@ fn scan_globals_pe(data: &[u8], globals: &[u64]) -> Result<Vec<usize>> {
     Ok(out)
 }
 
-// va - (vmaddr - fileoff) as long as it's inside the segment
 fn text_bounds(data: &[u8]) -> Result<(u64, u64, u64)> {
     if data.len() < 32 || data[0..4] != [0xcf, 0xfa, 0xed, 0xfe] {
         bail!("bad macho magic, not arm64/x64 little endian?");
@@ -584,7 +584,6 @@ fn ldrb(word: u32) -> Option<(u8, u8, u32)> {
 }
 
 fn mov_imm1(rd: u8) -> [u8; 4] {
-    // movz wD, #1 - 4 bytes, same length as the ldrb it's stomping
     (0x52800020u32 | rd as u32).to_le_bytes()
 }
 
@@ -781,7 +780,6 @@ fn run_globals_pe(exe_path: &Path, data: &mut Vec<u8>, args: &Args) -> Result<()
     }
     fs::write(exe_path, data)?;
     println!("patched {}", patches.len());
-    // no codesign on windows - unsigned exes just run
     Ok(())
 }
 

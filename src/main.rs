@@ -1,4 +1,6 @@
 mod binary;
+mod hooks;
+mod inject;
 mod palette;
 mod rbxm;
 mod themes;
@@ -13,50 +15,68 @@ use clap::Parser;
 #[derive(Parser, Debug, Clone)]
 #[command(name = "studio-patcher", version)]
 pub struct Args {
+    /// Path to the studio install/binary; auto-discovered if omitted.
     #[arg(long)]
     binary: Option<PathBuf>,
 
+    /// Raw signature bytes to search for, paired with --patch.
     #[arg(long)]
     signature: Option<String>,
 
+    /// Replacement bytes to splice in at the --signature match.
     #[arg(long)]
     patch: Option<String>,
 
+    /// Which match of --signature to patch, 0-indexed.
     #[arg(long, default_value_t = 0)]
     occurrence: usize,
 
-    // hex addrs, comma sep. every adrp+ldrb reading one of these becomes mov wD,#1
+    /// Hex addrs, comma separated, or "auto" - each becomes mov wD,#1.
     #[arg(long, value_delimiter = ',')]
     globals: Vec<String>,
 
+    /// Redirect studio's theme jsons onto disk for editing.
     #[arg(long)]
     themes: bool,
 
+    /// Patch Explorer/Ribbon/FindReplaceAll plugin colors from RbxmPalette.
     #[arg(long)]
     rbxm_palette: bool,
 
+    /// Reapply --rbxm-palette on every save of the theme json.
     #[arg(long)]
     watch: bool,
 
+    /// Override where the plugin rbxm's live, if auto-detection fails.
     #[arg(long)]
     rbxm_dir: Option<String>,
 
+    /// Check for and install a newer release, then exit.
     #[arg(long)]
     update: bool,
 
+    /// Load a dylib (mac) or dll (windows) into the target binary.
+    #[arg(long)]
+    inject: Option<String>,
+
+    /// Print candidate globals/permission-check sites without patching.
     #[arg(long)]
     discover: bool,
 
+    /// Show what would change without writing anything.
     #[arg(long)]
     dry_run: bool,
 
+    /// Skip making a .bak copy before patching.
     #[arg(long)]
     no_backup: bool,
 
+    /// Skip re-signing after patching (mac only).
     #[arg(long)]
     no_resign: bool,
 }
 
+/// Prompts `q [y/N]` on stdout and reads a yes/no answer from stdin.
 pub fn ask_yn(q: &str) -> bool {
     print!("{q} [y/N] ");
     let _ = io::stdout().flush();
@@ -85,6 +105,13 @@ fn run_auto(target: &std::path::Path, macho_path: &std::path::Path, args: &Args)
     if ask_yn("also apply the RbxmPalette colors from the same theme json?") {
         if let Err(e) = palette::run_rbxm_palette(target, args) {
             println!("rbxm palette patch failed ({e})");
+        }
+    }
+
+    println!("hooks add optional native behavior (currently: a custom script editor background image)");
+    if ask_yn("enable hooks?") {
+        if let Err(e) = hooks::install_editor_background(macho_path, args) {
+            println!("hook install failed ({e})");
         }
     }
     Ok(())
@@ -121,6 +148,21 @@ fn main() -> Result<()> {
     }
     if args.themes {
         themes::run_themes(&macho_path, &args)?;
+        did_something = true;
+    }
+    if let Some(dylib_path) = &args.inject {
+        if !args.no_backup {
+            binary::backup(&macho_path)?;
+        }
+        inject::inject_dylib(&macho_path, dylib_path)?;
+        let is_pe: bool = {
+            let mut head: [u8; 128] = [0; 128];
+            let n: usize = std::io::Read::read(&mut std::fs::File::open(&macho_path)?, &mut head)?;
+            binary::is_pe(&head[..n])
+        };
+        if !args.no_resign && !is_pe {
+            binary::resign(&macho_path)?;
+        }
         did_something = true;
     }
     if args.watch {

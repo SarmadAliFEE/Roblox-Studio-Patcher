@@ -195,7 +195,9 @@ impl Discovery {
                 let Some(context) = script_context else {
                     return self.drop_capture("lost ScriptContext mid-search");
                 };
-                match vm::find_lua_state_near(context, 0x100, &mut cursor) {
+                let found = vm::authoritative_lua_state(context)
+                    .or_else(|| vm::find_lua_state_near(context, 0x100, &mut cursor));
+                match found {
                     Some(lua_state) => {
                         let Some(data_model) = data_model else {
                             return self.drop_capture("lost DataModel mid-search");

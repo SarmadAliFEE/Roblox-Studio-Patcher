@@ -162,6 +162,31 @@ pub fn find_lua_state_near(root: usize, fields: usize, cursor: &mut Cursor) -> O
     None
 }
 
+pub const SC_VM_COLLECTION_FACET: usize = 0x130;
+pub const VM_COLLECTION_FIRST_VM: usize = 0xd8;
+pub const VM_STRIDE: usize = 0x290;
+pub const VM_LUA_STATE: usize = 0x258;
+pub const VM_CLASS_COUNT: usize = 3;
+
+pub fn global_vm(script_context: usize, vm_class: usize) -> usize {
+    script_context + SC_VM_COLLECTION_FACET + VM_COLLECTION_FIRST_VM + vm_class * VM_STRIDE
+}
+
+pub fn global_lua_state(script_context: usize, vm_class: usize) -> Option<usize> {
+    let storage = global_vm(script_context, vm_class) + VM_LUA_STATE;
+    let low: u32 = mem::read(storage).ok()?;
+    let high: u32 = mem::read(storage + 4).ok()?;
+    let decoded = crate::scan::decode_self_xor_ptr(storage, low, high);
+    mem::looks_like_pointer(decoded).then_some(decoded)
+}
+
+pub fn authoritative_lua_state(script_context: usize) -> Option<usize> {
+    (0..VM_CLASS_COUNT).find_map(|vm_class| {
+        let candidate = global_lua_state(script_context, vm_class)?;
+        looks_like_lua_state(candidate, Some(script_context)).then_some(candidate)
+    })
+}
+
 pub fn game_state_type(data_model: usize) -> Option<i32> {
     mem::read::<i32>(data_model + DATAMODEL_GAME_STATE_TYPE).ok()
 }

@@ -1,4 +1,5 @@
 pub mod discord;
+pub mod features;
 pub mod mem;
 pub mod platform;
 pub mod scan;
@@ -29,6 +30,7 @@ pub(crate) fn log(message: &str) {
 }
 
 fn on_loaded() {
+    guard("features", features::init);
     std::thread::spawn(|| {
         guard("install", || match vm::hook::install() {
             Ok(patched) => log(&format!("studio-hook: hooked {patched} vtable slot(s)")),

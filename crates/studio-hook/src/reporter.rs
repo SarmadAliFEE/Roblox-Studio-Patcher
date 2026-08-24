@@ -91,24 +91,17 @@ pub(crate) fn post(webhook: &str, content: &str) {
 #[cfg(unix)]
 mod crash {
     use core::ffi::c_void;
-    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicI32, Ordering};
 
     static WRITE_FD: AtomicI32 = AtomicI32::new(-1);
-    static SENT: AtomicBool = AtomicBool::new(false);
-    static WEBHOOK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
     const SIGNALS: [i32; 5] = [libc::SIGSEGV, libc::SIGBUS, libc::SIGILL, libc::SIGFPE, libc::SIGABRT];
 
     pub fn install(webhook: String) {
-        let _ = WEBHOOK.set(webhook);
-
-        let mut fds = [0i32; 2];
-        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-            return;
-        }
-        WRITE_FD.store(fds[1], Ordering::Release);
-        let read_fd = fds[0];
-        std::thread::spawn(move || reporter_thread(read_fd));
+        let Some(write_fd) = spawn_helper(&webhook) else { return };
+        WRITE_FD.store(write_fd, Ordering::Release);
 
         unsafe {
             let stack_size = libc::SIGSTKSZ.max(64 * 1024);
@@ -127,18 +120,30 @@ mod crash {
         }
     }
 
-    fn reporter_thread(read_fd: i32) {
-        let mut buf = [0u8; 256];
-        loop {
-            let n = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut c_void, buf.len()) };
-            if n <= 0 {
-                continue;
+    fn spawn_helper(webhook: &str) -> Option<i32> {
+        let mut fds = [0i32; 2];
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+        let script = format!(
+            "while IFS= read -r line; do curl -s -m 10 -H 'Content-Type: application/json' \
+             --data-raw \"{{\\\"content\\\":\\\"$line\\\"}}\" '{webhook}' >/dev/null 2>&1; done"
+        );
+        let stdin = unsafe { OwnedFd::from_raw_fd(read_fd) };
+        let spawned = Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .stdin(Stdio::from(stdin))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        match spawned {
+            Ok(_) => Some(write_fd),
+            Err(_) => {
+                unsafe { libc::close(write_fd) };
+                None
             }
-            let message = String::from_utf8_lossy(&buf[..n as usize]).into_owned();
-            if let Some(webhook) = WEBHOOK.get() {
-                super::post(webhook, &message);
-            }
-            SENT.store(true, Ordering::Release);
         }
     }
 
@@ -164,13 +169,10 @@ mod crash {
         let fd = WRITE_FD.load(Ordering::Acquire);
         if fd >= 0 {
             unsafe { libc::write(fd, buf.as_ptr() as *const c_void, len) };
-        }
-
-        let mut waited = 0u32;
-        while !SENT.load(Ordering::Acquire) && waited < 4000 {
-            let delay = libc::timespec { tv_sec: 0, tv_nsec: 20_000_000 };
+            // Hold the crashing thread briefly so the helper can curl the report
+            // out before the process dies.
+            let delay = libc::timespec { tv_sec: 3, tv_nsec: 0 };
             unsafe { libc::nanosleep(&delay, core::ptr::null_mut()) };
-            waited += 20;
         }
 
         unsafe {
@@ -204,29 +206,103 @@ mod crash {
 
 #[cfg(windows)]
 mod crash {
-    use std::sync::OnceLock;
+    use core::ffi::c_void;
+    use std::os::windows::io::IntoRawHandle;
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use windows_sys::Win32::Storage::FileSystem::WriteFile;
     use windows_sys::Win32::System::Diagnostics::Debug::{
         EXCEPTION_CONTINUE_SEARCH, EXCEPTION_POINTERS, SetUnhandledExceptionFilter,
     };
+    use windows_sys::Win32::System::Threading::Sleep;
 
-    static WEBHOOK: OnceLock<String> = OnceLock::new();
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    static WRITE_HANDLE: AtomicUsize = AtomicUsize::new(0);
 
     pub fn install(webhook: String) {
-        let _ = WEBHOOK.set(webhook);
+        if !spawn_helper(&webhook) {
+            return;
+        }
         unsafe { SetUnhandledExceptionFilter(Some(handler)) };
+    }
+
+    fn spawn_helper(webhook: &str) -> bool {
+        let script = format!(
+            "while($true){{ $l=[Console]::In.ReadLine(); if($l -eq $null){{break}}; \
+             try{{ Invoke-RestMethod -Uri '{webhook}' -Method Post -ContentType 'application/json' \
+             -Body ('{{\"content\":\"' + $l + '\"}}') }}catch{{}} }}"
+        );
+        let mut child = match Command::new("powershell")
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(_) => return false,
+        };
+        let Some(stdin) = child.stdin.take() else { return false };
+        WRITE_HANDLE.store(stdin.into_raw_handle() as usize, Ordering::Release);
+        std::mem::forget(child);
+        true
     }
 
     unsafe extern "system" fn handler(info: *const EXCEPTION_POINTERS) -> i32 {
         let (code, address) = unsafe {
             info.as_ref()
                 .and_then(|p| p.ExceptionRecord.as_ref())
-                .map(|record| (record.ExceptionCode, record.ExceptionAddress as usize))
+                .map(|record| (record.ExceptionCode as u64, record.ExceptionAddress as usize))
                 .unwrap_or((0, 0))
         };
-        if let Some(webhook) = WEBHOOK.get() {
-            super::post(webhook, &format!("CRASH exception={code:#x} addr={address:#x}"));
+
+        let mut buf = [0u8; 96];
+        let mut len = 0;
+        for &b in b"CRASH exception=0x" {
+            buf[len] = b;
+            len += 1;
+        }
+        len += write_uint(&mut buf[len..], code, 16);
+        for &b in b" addr=0x" {
+            buf[len] = b;
+            len += 1;
+        }
+        len += write_uint(&mut buf[len..], address as u64, 16);
+        buf[len] = b'\n';
+        len += 1;
+
+        let handle = WRITE_HANDLE.load(Ordering::Acquire);
+        if handle != 0 {
+            let mut written = 0u32;
+            unsafe {
+                WriteFile(handle as *mut c_void, buf.as_ptr(), len as u32, &mut written, core::ptr::null_mut());
+                Sleep(3000);
+            }
         }
         EXCEPTION_CONTINUE_SEARCH
+    }
+
+    fn write_uint(out: &mut [u8], mut value: u64, radix: u64) -> usize {
+        const DIGITS: &[u8] = b"0123456789abcdef";
+        let mut tmp = [0u8; 20];
+        let mut count = 0;
+        loop {
+            tmp[count] = DIGITS[(value % radix) as usize];
+            count += 1;
+            value /= radix;
+            if value == 0 {
+                break;
+            }
+        }
+        for i in 0..count {
+            if i < out.len() {
+                out[i] = tmp[count - 1 - i];
+            }
+        }
+        count.min(out.len())
     }
 }

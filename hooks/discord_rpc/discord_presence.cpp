@@ -145,6 +145,8 @@ void DiscordPresence_Start(const char *clientId) {
 
 static void *gLastPollLuaState = NULL;
 static void *gPollHandle = NULL;
+#define POLL_BACKOFF_MAX_MS 16000
+static int gConsecutivePollFailures = 0;
 
 void DiscordPresence_Tick(void) {
     if (!gStarted || !VM_IsReady()) return;
@@ -154,20 +156,31 @@ void DiscordPresence_Tick(void) {
         gLastPollLuaState = currentL;
         gLastPollMs = 0;
         gPollHandle = NULL;
+        gConsecutivePollFailures = 0;
     }
-    if (now - gLastPollMs < POLL_INTERVAL_MS) return;
+    uint64_t effectiveIntervalMs = POLL_INTERVAL_MS;
+    for (int i = 0; i < gConsecutivePollFailures && effectiveIntervalMs < POLL_BACKOFF_MAX_MS; i++) {
+        effectiveIntervalMs *= 2;
+    }
+    if (effectiveIntervalMs > POLL_BACKOFF_MAX_MS) effectiveIntervalMs = POLL_BACKOFF_MAX_MS;
+    if (now - gLastPollMs < effectiveIntervalMs) return;
     gLastPollMs = now;
 
     if (!gPollHandle) {
         gPollHandle = LuauRuntime_LoadPersistent(POLL_SETUP_SCRIPT, "=DiscordPresencePoll");
-        if (!gPollHandle) return;
+        if (!gPollHandle) {
+            gConsecutivePollFailures++;
+            return;
+        }
     }
 
     std::string result;
     if (!LuauRuntime_CallPersistent(gPollHandle, result)) {
         gPollHandle = NULL;
+        gConsecutivePollFailures++;
         return;
     }
+    gConsecutivePollFailures = 0;
 
     std::string fields[6];
     splitTabFields(result, fields, 6);

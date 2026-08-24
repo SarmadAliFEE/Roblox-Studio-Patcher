@@ -9,6 +9,8 @@ bool VM_IsPlayTestActive(void);
 
 void *VM_GetLuaState(void);
 
+void VM_InvalidateCapturedState(void);
+
 typedef int (*VM_LuauLoadFn)(void *L, const char *chunkname, const uint8_t *data, size_t size, int env);
 typedef uint64_t (*VM_CallDispatchFn)(void *L, uint64_t param2, int nargs);
 VM_LuauLoadFn VM_GetLuauLoadFn(void);

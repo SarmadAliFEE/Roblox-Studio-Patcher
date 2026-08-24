@@ -80,6 +80,7 @@ static bool invokeAndDecode(void *L, VM_CallDispatchFn callFn, uintptr_t closure
     VM_SafeReadBytes((const uint8_t *)L + 0x58, &topAfter, sizeof(topAfter));
 
     bool ok = true;
+    bool stateImplausible = false;
     size_t resultCount = 0;
     if (callResult != 0) {
         outResult = describeTValue(closureSlot);
@@ -93,6 +94,7 @@ static bool invokeAndDecode(void *L, VM_CallDispatchFn callFn, uintptr_t closure
                    (void *)topAfter, (void *)closureSlot);
             outResult = "<implausible result, call treated as failed>";
             ok = false;
+            stateImplausible = true;
         } else {
             std::vector<std::string> results;
             for (uintptr_t slot = closureSlot;
@@ -107,6 +109,12 @@ static bool invokeAndDecode(void *L, VM_CallDispatchFn callFn, uintptr_t closure
             resultCount = results.size();
         }
     }
+    
+    if (stateImplausible) {
+        VM_InvalidateCapturedState();
+        return false;
+    }
+
     VM_SafeWriteBytes((void *)((const uint8_t *)L + 0x58), &closureSlot, sizeof(closureSlot));
 
     if (!ok) return false;

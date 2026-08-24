@@ -1053,6 +1053,13 @@ void *VM_GetLuaState(void) {
     return gCapturedLuaState;
 }
 
+void VM_InvalidateCapturedState(void) {
+    logmsg("diag: VM_InvalidateCapturedState: a real call came back structurally impossible, dropping capture\n");
+    gLastFailedJob = gCapturedDataModelJob;
+    gLastFailedJobMs = monotonicMillis();
+    resetCapturedState();
+}
+
 VM_LuauLoadFn VM_GetLuauLoadFn(void) {
     return (VM_LuauLoadFn)gLuauLoadWrapperFn;
 }

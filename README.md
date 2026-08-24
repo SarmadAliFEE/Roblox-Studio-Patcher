@@ -1,5 +1,7 @@
 # Roblox-Studio-Patcher
 
+![platform](https://img.shields.io/badge/platform-macOS%20%7C%20windows-blue) ![rust](https://img.shields.io/badge/rust-orange)
+
 Patches Roblox Studio so `HasInternalPermission` always returns true. mac + windows.
 
 ## What this actually does
@@ -50,12 +52,14 @@ these are baked in at patch time, not read live, so editing the json means runni
 
 ## Native hooks
 
-`--inject path/to/thing.dylib` (mac) or `.dll` (windows) loads a native hook into Studio at launch - patches the binary's import table, doesn't touch running memory.
+one small rust payload loaded into Studio at launch - patches the binary's import table, doesn't touch running memory. the default run asks about each, or `--inject path/to/thing.dylib` / `.dll` for your own.
 
-Two hooks right now, both on mac and windows. The tool builds and injects them for you - just answer yes when it asks.
+all mac + windows unless noted. config jsons live in the theme-set folder above.
 
-- custom image behind the script editor. `EditorBackground.json` in the theme-set folder above, leave `image` blank and it's a no-op.
-- hotkeys to fade studio's whole window in/out. `WindowTransparency.json` in the same folder - defaults to ctrl+=/ctrl+- on mac, alt+=/alt+- on windows, both changeable there.
+- **script editor background** - a custom image behind the code. `EditorBackground.json`, blank `image` = off.
+- **window transparency** - hotkeys to fade studio's whole window. `WindowTransparency.json`, ctrl+=/ctrl+- on mac, alt+=/alt+- on windows.
+- **discord rich presence** *(mac for now)* - shows the place, script, and cursor line you're on, testing status, a thumbnail. `--discord`.
+- **webhook logging** - `--webhook-logging` mirrors every error and crash to a discord webhook. `Logger.json`.
 
 ## Building from source
 

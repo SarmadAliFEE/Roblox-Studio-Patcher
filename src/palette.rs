@@ -171,7 +171,7 @@ fn patch_target(dir: &Path, obj: &serde_json::Map<String, Value>, t: &Target, ar
             rbxm_path.display()
         )
     })?;
-    println!("patched {}", t.rbxm_file);
+    println!("    {}", crate::term::dim(&format!("patched {}", t.rbxm_file)));
     Ok(())
 }
 
@@ -196,12 +196,12 @@ fn run_rbxm_palette_inner(target: &Path, args: &Args, do_backup: bool) -> Result
     for t in TARGETS {
         match patch_target(&dir, obj, t, args, do_backup) {
             Ok(()) => any_ok = true,
-            Err(e) => println!("{} skipped ({e})", t.rbxm_file),
+            Err(e) => println!("    {}", crate::term::dim(&format!("{} skipped ({e})", t.rbxm_file))),
         }
     }
 
     if any_ok && !args.dry_run {
-        println!("colors pulled from {}", dark_json.display());
+        println!("    {}", crate::term::dim(&format!("colors pulled from {}", dark_json.display())));
     }
     Ok(())
 }

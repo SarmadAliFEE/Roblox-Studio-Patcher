@@ -3,6 +3,7 @@ mod hooks;
 mod inject;
 mod palette;
 mod rbxm;
+mod term;
 mod themes;
 mod update;
 
@@ -90,7 +91,18 @@ pub struct Args {
 
 /// Prompts `q [y/N]` on stdout and reads a yes/no answer from stdin.
 pub fn ask_yn(q: &str) -> bool {
-    print!("{q} [y/N] ");
+    print!("  {} {} ", term::bold(q), term::dim("[y/N]"));
+    read_yn()
+}
+
+fn ask_feature(title: &str, detail: &str) -> bool {
+    term::step(title);
+    term::detail(detail);
+    print!("    {} ", term::dim("[y/N]"));
+    read_yn()
+}
+
+fn read_yn() -> bool {
     let _ = io::stdout().flush();
     let mut line: String = String::new();
     io::stdin().read_line(&mut line).ok();
@@ -102,55 +114,87 @@ fn run_auto(target: &std::path::Path, macho_path: &std::path::Path, args: &Args)
 
     let mut globals_args: Args = args.clone();
     globals_args.globals = vec!["auto".to_string()];
-    if let Err(e) = binary::run_globals(macho_path, &globals_args) {
-        println!("permission patch failed ({e}) - probably already patched");
+    term::step("patching plugin permissions");
+    term::detail("lets studio load unsigned plugins");
+    match binary::run_globals(macho_path, &globals_args) {
+        Ok(_) => term::ok("permissions patched"),
+        Err(e) => term::warn(&format!("skipped ({e}) - probably already patched")),
     }
 
-    println!("custom themes work by patching the binary to load theme jsons off disk");
-    if ask_yn("enable custom theme support?") {
-        if let Err(e) = themes::run_themes(macho_path, args) {
-            println!("theme patch failed ({e}) - probably already patched");
+    if ask_feature(
+        "enable custom theme support?",
+        "patches the binary to load theme jsons off disk",
+    ) {
+        match themes::run_themes(macho_path, args) {
+            Ok(_) => term::ok("theme support enabled"),
+            Err(e) => term::warn(&format!("skipped ({e}) - probably already patched")),
         }
     }
 
-    println!("certain plugins have their own colors baked into plugin bytecode, separate from the qt theme");
-    if ask_yn("also apply the RbxmPalette colors from the same theme json?") {
-        if let Err(e) = palette::run_rbxm_palette(target, args) {
-            println!("rbxm palette patch failed ({e})");
+    if ask_feature(
+        "also apply RbxmPalette colors?",
+        "recolors plugin bytecode that ignores the qt theme",
+    ) {
+        match palette::run_rbxm_palette(target, args) {
+            Ok(_) => term::ok("rbxm palette applied"),
+            Err(e) => term::warn(&format!("rbxm palette patch failed ({e})")),
         }
     }
 
-    println!("hooks add optional native behavior (currently: a custom script editor background image)");
-    if ask_yn("enable hooks?") {
-        if let Err(e) = hooks::install_editor_background(macho_path, args) {
-            println!("hook install failed ({e})");
+    if ask_feature(
+        "enable native hooks?",
+        "adds a custom image behind the script editor",
+    ) {
+        match hooks::install_editor_background(macho_path, args) {
+            Ok(_) => term::ok("editor background hook installed"),
+            Err(e) => term::warn(&format!("hook install failed ({e})")),
         }
     }
 
-    println!("another hook: hotkeys to fade studio's whole window in/out");
-    if ask_yn("enable window transparency hotkeys?") {
-        if let Err(e) = hooks::install_window_transparency(macho_path, args) {
-            println!("hook install failed ({e})");
+    if ask_feature(
+        "enable window transparency hotkeys?",
+        "hotkeys to fade studio's whole window in and out",
+    ) {
+        match hooks::install_window_transparency(macho_path, args) {
+            Ok(_) => term::ok("window transparency hook installed"),
+            Err(e) => term::warn(&format!("hook install failed ({e})")),
         }
     }
 
-    println!("another hook: discord rich presence showing the place and script you're editing");
-    if ask_yn("enable discord rich presence?") {
-        if let Err(e) = hooks::install_studio_hook(macho_path, args) {
-            println!("hook install failed ({e})");
+    if ask_feature(
+        "enable discord rich presence?",
+        "shows the place and script you're editing",
+    ) {
+        match hooks::install_studio_hook(macho_path, args) {
+            Ok(_) => term::ok("discord rich presence installed"),
+            Err(e) => term::warn(&format!("hook install failed ({e})")),
         }
     }
 
-    println!("optional: report every error and crash to a discord webhook (for debugging)");
-    if ask_yn("enable webhook logging?") {
-        if let Err(e) = hooks::install_logger(macho_path, args) {
-            println!("hook install failed ({e})");
+    if ask_feature(
+        "enable webhook logging?",
+        "reports every error and crash to a discord webhook",
+    ) {
+        match hooks::install_logger(macho_path, args) {
+            Ok(_) => term::ok("webhook logging installed"),
+            Err(e) => term::warn(&format!("hook install failed ({e})")),
         }
     }
+
+    println!();
+    term::ok(&term::bold("all done"));
+    println!();
     Ok(())
 }
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("{} {e:#}", term::red("error:"));
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     let args: Args = Args::parse();
 
     if args.update {
@@ -158,13 +202,15 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    term::banner();
+
     let target: PathBuf = args
         .binary
         .clone()
         .map(Ok)
         .unwrap_or_else(binary::discover_binary)?;
     let macho_path: PathBuf = binary::resolve_macho(&target)?;
-    println!("target: {}", macho_path.display());
+    println!("{} {}", term::dim("target"), term::cyan(&macho_path.display().to_string()));
 
     let mut did_something: bool = false;
     if args.discover {

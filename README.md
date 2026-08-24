@@ -4,6 +4,12 @@
 
 flips Studio's `HasInternalPermission` to always-true, plus a handful of optional native hooks. one binary, no install, nothing to compile. mac (arm64) + windows.
 
+> [!NOTE]
+> it patches Studio's binary on disk. a Studio update replaces that binary, so rerun the tool after each update. the original is backed up as `.bak-<timestamp>` next to it either way.
+
+> [!WARNING]
+> this pokes at internal, undocumented Studio state. it's for local tinkering and learning, not production - stuff can break between Roblox versions. run it on a Studio install you don't mind re-downloading.
+
 ## what it does
 
 Studio has a hidden internal mode normally reserved for Roblox employees and their "Soothsayer" testers - debug tools, experimental features, internal-only APIs and menus you don't normally get. `HasInternalPermission` is the check that gates it; this patches it open.
@@ -65,6 +71,18 @@ cargo build --release
 
 windows from mac/linux needs the target + mingw (`rustup target add x86_64-pc-windows-gnu`, `brew install mingw-w64`), then `cargo build --release --target x86_64-pc-windows-gnu`. `.cargo/config.toml` routes that through `scripts/mingw-link-wrapper.sh` to statically link the bundled Luau compiler - without it the exe would want `libstdc++-6.dll` next to it to run.
 
+## contributing
+
+PRs welcome. two rules: no new dependencies (the point is one self-contained binary), and match the style that's already there. new native behavior goes in `crates/studio-hook` as its own module. if you touch the VM or signature scanning, mention which Studio build you tested on - the offsets drift between versions.
+
+## disclaimer
+
+not affiliated with Roblox. "Roblox" and "Roblox Studio" belong to Roblox Corporation. this is an independent tool for local experimentation and learning, provided as-is with no warranty - you run it at your own risk, and you're responsible for how you use it.
+
 ## issues
 
 DM [uwufuzzywiiiaisdd](https://discord.com/users/1382448091445203037) on discord.
+
+## license
+
+[MIT](LICENSE)

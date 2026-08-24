@@ -127,7 +127,7 @@ pub fn backup(macho_path: &Path) -> Result<()> {
         .as_secs();
     let bak: PathBuf = macho_path.with_extension(format!("bak-{ts}"));
     fs::copy(macho_path, &bak)?;
-    println!("backup: {}", bak.display());
+    println!("    {}", crate::term::dim(&format!("backup: {}", bak.display())));
     Ok(())
 }
 

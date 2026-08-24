@@ -69,11 +69,11 @@ pub fn check_and_prompt() {
     let current = env!("CARGO_PKG_VERSION");
     let (version, url) = match latest_release() {
         Ok(r) => r,
-        Err(e) => return println!("update check failed ({e}), skipping"),
+        Err(e) => return crate::term::warn(&format!("update check failed ({e}), skipping")),
     };
 
     if !newer(&version, current) {
-        return println!("already on the latest version ({current})");
+        return crate::term::ok(&format!("up to date ({current})"));
     }
     if !ask_yn(&format!("update available: {current} -> {version} - install it?")) {
         return;

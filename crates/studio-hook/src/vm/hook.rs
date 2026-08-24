@@ -48,6 +48,9 @@ pub fn ready() -> Option<crate::vm::discovery::Ready> {
 }
 
 pub fn install() -> Result<usize, InstallError> {
+    let flags = crate::vm::luau::enable_luau_flags();
+    crate::log(&format!("luau: enabled {flags} compiler flag(s)"));
+
     let resolved = resolve::resolve().map_err(InstallError::Resolve)?;
 
     let (Some(data_model), Some(script_context)) =

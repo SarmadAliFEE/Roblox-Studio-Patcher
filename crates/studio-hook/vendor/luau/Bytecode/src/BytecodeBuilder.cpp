@@ -792,8 +792,7 @@ void BytecodeBuilder::finalize()
 
     for (const Function& func : functions)
     {
-        if (FFlag::LuauBytecodeCostModel || FFlag::LuauCompileEmitVectorDouble || FFlag::DebugLuauUserDefinedClasses)
-            writeVarInt(bytecode, func.data.size());
+        writeVarInt(bytecode, func.data.size());
         bytecode += func.data;
     }
 
@@ -1029,12 +1028,12 @@ void BytecodeBuilder::writeFunction(std::string& ss, uint32_t id, uint8_t flags,
             writeVarInt(ss, pc);
         }
     }
-    else if (FFlag::LuauBytecodeCostModel || FFlag::LuauCompileEmitVectorDouble || FFlag::DebugLuauUserDefinedClasses)
+    else
     {
         writeVarInt(ss, 0); // Empty feedback vector
     }
 
-    if ((FFlag::LuauBytecodeCostModel || FFlag::LuauCompileEmitVectorDouble || FFlag::DebugLuauUserDefinedClasses) && (flags & LPF_INLINABLE) != 0)
+    if ((flags & LPF_INLINABLE) != 0)
     {
         writeVarInt(ss, cost);
     }

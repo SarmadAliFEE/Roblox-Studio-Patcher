@@ -1,6 +1,7 @@
 pub mod mem;
 pub mod platform;
 pub mod scan;
+pub mod vm;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 

@@ -23,7 +23,7 @@ fn newer(a: &str, b: &str) -> bool {
 // (version tag, download url for this platform's asset)
 fn latest_release() -> Result<(String, String)> {
     let out = Command::new("curl")
-        .args(["-fsSL", "-H", "Accept: application/vnd.github+json"])
+        .args(["-fsSL", "--connect-timeout", "5", "--max-time", "15", "-H", "Accept: application/vnd.github+json"])
         .arg(format!("https://api.github.com/repos/{REPO}/releases/latest"))
         .output()
         .context("curl not on PATH?")?;
@@ -47,7 +47,12 @@ fn latest_release() -> Result<(String, String)> {
 
 fn install(url: &str) -> Result<()> {
     let tmp: PathBuf = env::temp_dir().join(ASSET_NAME);
-    let ok = Command::new("curl").args(["-fsSL", "-o"]).arg(&tmp).arg(url).status()?.success();
+    let ok = Command::new("curl")
+        .args(["-fsSL", "--connect-timeout", "10", "--max-time", "120", "-o"])
+        .arg(&tmp)
+        .arg(url)
+        .status()?
+        .success();
     if !ok {
         bail!("download failed");
     }

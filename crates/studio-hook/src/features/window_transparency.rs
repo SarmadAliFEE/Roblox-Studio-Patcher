@@ -1,7 +1,7 @@
 #[cfg(target_os = "macos")]
 const CONFIG_PATH: &str = "/Users/Shared/rbx-theme-set/WindowTransparency.json";
 #[cfg(target_os = "windows")]
-const CONFIG_PATH: &str = r"C:\ProgramData\rbx-theme-set\WindowTransparency.json";
+const CONFIG_PATH: &str = r"C:\Users\Public\rbxthemeset\WindowTransparency.json";
 
 const DEFAULT_OPACITY: f64 = 1.0;
 const DEFAULT_STEP: f64 = 0.05;

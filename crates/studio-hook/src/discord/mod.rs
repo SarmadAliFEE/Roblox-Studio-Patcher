@@ -10,7 +10,7 @@ const CLIENT_ID: &str = "1540119100318027776";
 #[cfg(target_os = "macos")]
 const CONFIG_PATH: &str = "/Users/Shared/rbx-theme-set/DiscordRPC.json";
 #[cfg(target_os = "windows")]
-const CONFIG_PATH: &str = r"C:\ProgramData\rbx-theme-set\DiscordRPC.json";
+const CONFIG_PATH: &str = r"C:\Users\Public\rbxthemeset\DiscordRPC.json";
 
 pub fn start() -> Option<Presence> {
     if !enabled() {

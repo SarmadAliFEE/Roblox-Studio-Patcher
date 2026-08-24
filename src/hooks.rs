@@ -5,16 +5,17 @@ use anyhow::Result;
 use crate::Args;
 
 #[cfg(not(target_os = "windows"))]
-const STUDIO_HOOK_DYLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libstudio_hook_payload.dylib"));
+const STUDIO_HOOK_PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libstudio_hook_payload.dylib"));
+#[cfg(target_os = "windows")]
+const STUDIO_HOOK_PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/studio_hook_payload.dll"));
 
-/// Injects the studio-hook payload (discord rich presence + luau vm bridge).
 #[cfg(not(target_os = "windows"))]
-pub fn install_studio_hook(macho_path: &Path, args: &Args) -> Result<()> {
+fn install_payload(macho_path: &Path, args: &Args) -> Result<()> {
     use crate::{binary, inject, themes};
 
     std::fs::create_dir_all(themes::THEMES_DIR)?;
     let dylib_path: std::path::PathBuf = Path::new(themes::THEMES_DIR).join("studio_hook.dylib");
-    std::fs::write(&dylib_path, STUDIO_HOOK_DYLIB)?;
+    std::fs::write(&dylib_path, STUDIO_HOOK_PAYLOAD)?;
 
     binary::kill_running_studio(macho_path, args)?;
     if !args.no_backup {
@@ -24,156 +25,52 @@ pub fn install_studio_hook(macho_path: &Path, args: &Args) -> Result<()> {
     if !args.no_resign {
         binary::resign(macho_path)?;
     }
-    println!("discord rich presence hook installed");
     Ok(())
 }
 
 #[cfg(target_os = "windows")]
-const STUDIO_HOOK_DLL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/studio_hook_payload.dll"));
-
-#[cfg(target_os = "windows")]
-pub fn install_studio_hook(exe_path: &Path, args: &Args) -> Result<()> {
+fn install_payload(exe_path: &Path, args: &Args) -> Result<()> {
     use anyhow::Context;
 
     use crate::{binary, inject};
 
     let exe_dir: &Path = exe_path.parent().context("exe path has no parent directory")?;
     let dll_path: std::path::PathBuf = exe_dir.join("studio_hook.dll");
-    std::fs::write(&dll_path, STUDIO_HOOK_DLL)?;
+    std::fs::write(&dll_path, STUDIO_HOOK_PAYLOAD)?;
 
     binary::kill_running_studio(exe_path, args)?;
     if !args.no_backup {
         binary::backup(exe_path)?;
     }
     inject::inject_dylib(exe_path, &dll_path.to_string_lossy())?;
+    Ok(())
+}
+
+/// Injects the payload; discord presence self-activates.
+pub fn install_studio_hook(target: &Path, args: &Args) -> Result<()> {
+    install_payload(target, args)?;
     println!("discord rich presence hook installed");
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
-const EDITOR_BACKGROUND_SOURCE: &str = include_str!("../hooks/editor_background/editor_background.mm");
-
-/// Compiles and injects the script-editor-background hook.
-#[cfg(not(target_os = "windows"))]
-pub fn install_editor_background(macho_path: &Path, args: &Args) -> Result<()> {
-    use anyhow::{bail, Context};
-    use std::process::Command;
-
-    use crate::{binary, inject, themes};
-
-    let src_path: std::path::PathBuf = std::env::temp_dir().join("studio_patcher_editor_background.mm");
-    std::fs::write(&src_path, EDITOR_BACKGROUND_SOURCE)?;
-
-    std::fs::create_dir_all(themes::THEMES_DIR)?;
-    let dylib_path: std::path::PathBuf = Path::new(themes::THEMES_DIR).join("editor_background.dylib");
-
-    let ok: bool = Command::new("clang++")
-        .args(["-dynamiclib", "-std=c++17", "-fobjc-arc", "-arch", "arm64", "-framework", "Foundation", "-o"])
-        .arg(&dylib_path)
-        .arg(&src_path)
-        .status()
-        .context("couldn't run clang++ - install xcode command line tools (xcode-select --install)")?
-        .success();
-    if !ok {
-        bail!("clang++ failed to compile the hook");
-    }
-
-    themes::ensure_theme_jsons()?;
-    binary::kill_running_studio(macho_path, args)?;
-    if !args.no_backup {
-        binary::backup(macho_path)?;
-    }
-    inject::inject_dylib(macho_path, &dylib_path.to_string_lossy())?;
-    if !args.no_resign {
-        binary::resign(macho_path)?;
-    }
-    println!("hook installed - edit {} to configure it", themes::editor_background_json_path().display());
+/// Injects the payload and writes the editor-background config to fill in.
+pub fn install_editor_background(target: &Path, args: &Args) -> Result<()> {
+    crate::themes::ensure_theme_jsons()?;
+    install_payload(target, args)?;
+    println!(
+        "hook installed - set \"image\" in {} to a background image",
+        crate::themes::editor_background_json_path().display()
+    );
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
-const EDITOR_BACKGROUND_DLL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/editor_background_windows.dll"));
-
-#[cfg(target_os = "windows")]
-pub fn install_editor_background(exe_path: &Path, args: &Args) -> Result<()> {
-    use anyhow::Context;
-
-    use crate::{binary, inject, themes};
-
-    let exe_dir: &Path = exe_path.parent().context("exe path has no parent directory")?;
-    let dll_path: std::path::PathBuf = exe_dir.join("editor_background_windows.dll");
-    std::fs::write(&dll_path, EDITOR_BACKGROUND_DLL)?;
-
-    themes::ensure_theme_jsons()?;
-    binary::kill_running_studio(exe_path, args)?;
-    if !args.no_backup {
-        binary::backup(exe_path)?;
-    }
-    inject::inject_dylib(exe_path, &dll_path.to_string_lossy())?;
-    println!("hook installed - edit {} to configure it", themes::editor_background_json_path().display());
-    Ok(())
-}
-
-#[cfg(not(target_os = "windows"))]
-const WINDOW_TRANSPARENCY_SOURCE: &str = include_str!("../hooks/window_transparency/window_transparency.mm");
-
-/// Compiles and injects the whole-window-transparency hook.
-#[cfg(not(target_os = "windows"))]
-pub fn install_window_transparency(macho_path: &Path, args: &Args) -> Result<()> {
-    use anyhow::{bail, Context};
-    use std::process::Command;
-
-    use crate::{binary, inject, themes};
-
-    let src_path: std::path::PathBuf = std::env::temp_dir().join("studio_patcher_window_transparency.mm");
-    std::fs::write(&src_path, WINDOW_TRANSPARENCY_SOURCE)?;
-
-    std::fs::create_dir_all(themes::THEMES_DIR)?;
-    let dylib_path: std::path::PathBuf = Path::new(themes::THEMES_DIR).join("window_transparency.dylib");
-
-    let ok: bool = Command::new("clang++")
-        .args(["-dynamiclib", "-std=c++17", "-fobjc-arc", "-arch", "arm64", "-framework", "Cocoa", "-o"])
-        .arg(&dylib_path)
-        .arg(&src_path)
-        .status()
-        .context("couldn't run clang++ - install xcode command line tools (xcode-select --install)")?
-        .success();
-    if !ok {
-        bail!("clang++ failed to compile the hook");
-    }
-
-    themes::ensure_theme_jsons()?;
-    binary::kill_running_studio(macho_path, args)?;
-    if !args.no_backup {
-        binary::backup(macho_path)?;
-    }
-    inject::inject_dylib(macho_path, &dylib_path.to_string_lossy())?;
-    if !args.no_resign {
-        binary::resign(macho_path)?;
-    }
-    println!("hook installed - edit {} to configure it", themes::window_transparency_json_path().display());
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-const WINDOW_TRANSPARENCY_DLL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/window_transparency_windows.dll"));
-
-#[cfg(target_os = "windows")]
-pub fn install_window_transparency(exe_path: &Path, args: &Args) -> Result<()> {
-    use anyhow::Context;
-
-    use crate::{binary, inject, themes};
-
-    let exe_dir: &Path = exe_path.parent().context("exe path has no parent directory")?;
-    let dll_path: std::path::PathBuf = exe_dir.join("window_transparency_windows.dll");
-    std::fs::write(&dll_path, WINDOW_TRANSPARENCY_DLL)?;
-
-    themes::ensure_theme_jsons()?;
-    binary::kill_running_studio(exe_path, args)?;
-    if !args.no_backup {
-        binary::backup(exe_path)?;
-    }
-    inject::inject_dylib(exe_path, &dll_path.to_string_lossy())?;
-    println!("hook installed - edit {} to configure it", themes::window_transparency_json_path().display());
+/// Injects the payload and writes the window-transparency config.
+pub fn install_window_transparency(target: &Path, args: &Args) -> Result<()> {
+    crate::themes::ensure_theme_jsons()?;
+    install_payload(target, args)?;
+    println!(
+        "hook installed - hotkeys in {} adjust window opacity",
+        crate::themes::window_transparency_json_path().display()
+    );
     Ok(())
 }

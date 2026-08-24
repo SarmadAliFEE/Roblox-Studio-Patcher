@@ -30,7 +30,12 @@ pub fn init() {
     std::thread::spawn(move || pump(rx, hook));
 
     install_panic_hook();
-    crash::install(webhook);
+    // Install native crash handlers only after Studio has spun up its own, so ours
+    // sit on top and chain down to Roblox's crash handler rather than being replaced.
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(6));
+        crash::install(webhook);
+    });
     report(&format!("logger online - pid {} - {}", std::process::id(), os_line()));
 }
 
@@ -167,9 +172,11 @@ mod crash {
     use core::ffi::c_void;
     use std::os::fd::{FromRawFd, OwnedFd};
     use std::process::{Command, Stdio};
-    use std::sync::atomic::{AtomicI32, Ordering};
+    use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
     static WRITE_FD: AtomicI32 = AtomicI32::new(-1);
+    static PREV_HANDLER: [AtomicUsize; 6] = [const { AtomicUsize::new(0) }; 6];
+    static PREV_FLAGS: [AtomicI32; 6] = [const { AtomicI32::new(0) }; 6];
 
     const SIGNALS: [i32; 6] =
         [libc::SIGSEGV, libc::SIGBUS, libc::SIGILL, libc::SIGFPE, libc::SIGABRT, libc::SIGTRAP];
@@ -185,12 +192,16 @@ mod crash {
                 let stack = libc::stack_t { ss_sp: mem, ss_flags: 0, ss_size: stack_size };
                 libc::sigaltstack(&stack, core::ptr::null_mut());
             }
-            for signal in SIGNALS {
+            for (index, &signal) in SIGNALS.iter().enumerate() {
                 let mut action: libc::sigaction = core::mem::zeroed();
                 action.sa_sigaction = handler as *const () as usize;
                 action.sa_flags = libc::SA_ONSTACK | libc::SA_SIGINFO | libc::SA_NODEFER;
                 libc::sigemptyset(&mut action.sa_mask);
-                libc::sigaction(signal, &action, core::ptr::null_mut());
+                let mut old: libc::sigaction = core::mem::zeroed();
+                libc::sigaction(signal, &action, &mut old);
+                // Remember whatever Roblox already had so we can chain to it.
+                PREV_HANDLER[index].store(old.sa_sigaction, Ordering::Release);
+                PREV_FLAGS[index].store(old.sa_flags, Ordering::Release);
             }
         }
     }
@@ -222,7 +233,7 @@ mod crash {
         }
     }
 
-    extern "C" fn handler(signal: i32, info: *mut libc::siginfo_t, _ctx: *mut c_void) {
+    extern "C" fn handler(signal: i32, info: *mut libc::siginfo_t, ctx: *mut c_void) {
         let fault = unsafe { info.as_ref() }.map(|i| unsafe { i.si_addr() } as usize).unwrap_or(0);
 
         // Async-signal-safe formatting into a stack buffer: "CRASH signal=NN addr=0x...".
@@ -248,6 +259,24 @@ mod crash {
             // out before the process dies.
             let delay = libc::timespec { tv_sec: 3, tv_nsec: 0 };
             unsafe { libc::nanosleep(&delay, core::ptr::null_mut()) };
+        }
+
+        // Chain to Roblox's own handler (if any) so its crash reporting still runs.
+        if let Some(index) = SIGNALS.iter().position(|&s| s == signal) {
+            let previous = PREV_HANDLER[index].load(Ordering::Acquire);
+            let flags = PREV_FLAGS[index].load(Ordering::Acquire);
+            if previous > 1 {
+                unsafe {
+                    if flags & libc::SA_SIGINFO != 0 {
+                        let previous: extern "C" fn(i32, *mut libc::siginfo_t, *mut c_void) =
+                            core::mem::transmute(previous);
+                        previous(signal, info, ctx);
+                    } else {
+                        let previous: extern "C" fn(i32) = core::mem::transmute(previous);
+                        previous(signal);
+                    }
+                }
+            }
         }
 
         unsafe {
@@ -296,12 +325,18 @@ mod crash {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     static WRITE_HANDLE: AtomicUsize = AtomicUsize::new(0);
+    static PREV_FILTER: AtomicUsize = AtomicUsize::new(0);
+
+    type FilterFn = unsafe extern "system" fn(*const EXCEPTION_POINTERS) -> i32;
 
     pub fn install(webhook: String) {
         if !spawn_helper(&webhook) {
             return;
         }
-        unsafe { SetUnhandledExceptionFilter(Some(handler)) };
+        // Chain to whatever was already registered (Roblox's own crash handler)
+        // so their reporting still runs after ours.
+        let previous = unsafe { SetUnhandledExceptionFilter(Some(handler)) };
+        PREV_FILTER.store(previous.map(|f| f as usize).unwrap_or(0), Ordering::Release);
     }
 
     fn spawn_helper(webhook: &str) -> bool {
@@ -357,6 +392,12 @@ mod crash {
                 WriteFile(handle as *mut c_void, buf.as_ptr(), len as u32, &mut written, core::ptr::null_mut());
                 Sleep(3000);
             }
+        }
+
+        let previous = PREV_FILTER.load(Ordering::Acquire);
+        if previous != 0 {
+            let previous: FilterFn = unsafe { core::mem::transmute(previous) };
+            return unsafe { previous(info) };
         }
         EXCEPTION_CONTINUE_SEARCH
     }

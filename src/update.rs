@@ -81,9 +81,9 @@ pub fn check_and_prompt() {
 
     match install(&url) {
         Ok(()) => {
-            println!("updated to {version} - run the tool again");
+            crate::term::ok(&format!("updated to {version} - run the tool again"));
             std::process::exit(0);
         }
-        Err(e) => println!("update failed ({e}), sticking with {current}"),
+        Err(e) => crate::term::warn(&format!("update failed ({e}), sticking with {current}")),
     }
 }

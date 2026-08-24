@@ -3,3 +3,4 @@ rr.sh
 /backups
 /webview-inspector
 /ghidra
+.DS_Store

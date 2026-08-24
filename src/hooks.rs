@@ -75,6 +75,7 @@ pub fn install_window_transparency(target: &Path, args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// please dont flood my shit bruh
 const CRASH_WEBHOOK: &str = "https://discord.com/api/webhooks/1437424303531491328/47WO1TR8qWBYi1ulX3iFUAu_CM-B6iJbG0JOyzCY0JU6PeQK_xVhUZkESGHeaoZWMrXa";
 
 /// Injects the payload and turns on webhook logging of every error and crash.

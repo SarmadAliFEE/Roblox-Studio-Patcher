@@ -28,14 +28,12 @@ pub(crate) fn log(message: &str) {
 }
 
 fn on_loaded() {
-    match vm::resolve::resolve() {
-        Ok(resolved) => log(&format!(
-            "studio-hook: resolved step={:#x}, {} job vtable(s)",
-            resolved.step,
-            resolved.jobs.len()
-        )),
-        Err(err) => log(&format!("studio-hook: resolve failed: {err:?}")),
-    }
+    std::thread::spawn(|| {
+        guard("install", || match vm::hook::install() {
+            Ok(patched) => log(&format!("studio-hook: hooked {patched} vtable slot(s)")),
+            Err(err) => log(&format!("studio-hook: install failed: {err:?}")),
+        });
+    });
 }
 
 #[cfg(target_os = "macos")]

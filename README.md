@@ -23,7 +23,6 @@ on top of the permission patch, opt into any of:
 - **script editor background** - a custom image behind your code
 - **window transparency** - hotkeys to fade the whole window
 - **discord rich presence** - the place, script, and line you're editing *(mac for now)*
-- **webhook logging** - mirror every error and crash to a discord webhook
 
 ## usage
 

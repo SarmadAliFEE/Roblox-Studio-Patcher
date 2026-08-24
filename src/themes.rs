@@ -33,7 +33,7 @@ const EDITOR_BACKGROUND_DEFAULTS: &str = concat!(
     "{\n",
     "    \"enabled\": true,\n",
     "    \"image\": \"\",\n",
-    "    \"opacity\": 0.15\n",
+    "    \"opacity\": 0.1\n",
     "}\n",
 );
 

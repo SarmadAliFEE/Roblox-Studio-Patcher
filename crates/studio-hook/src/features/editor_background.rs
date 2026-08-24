@@ -3,7 +3,7 @@ const CONFIG_PATH: &str = "/Users/Shared/rbx-theme-set/EditorBackground.json";
 #[cfg(target_os = "windows")]
 const CONFIG_PATH: &str = r"C:\Users\Public\rbxthemeset\EditorBackground.json";
 
-const DEFAULT_OPACITY: f64 = 0.15;
+const DEFAULT_OPACITY: f64 = 0.10;
 
 #[derive(Debug, Clone)]
 struct Config {

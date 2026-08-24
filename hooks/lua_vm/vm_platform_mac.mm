@@ -508,11 +508,12 @@ static void *findLuaStateNear(void *root, int numFields, int *ioResumeIndex) {
 
 #define ELEVATED_CAPABILITIES_VALUE 0xFFFFFFFFFFFFFFFFULL
 
-static void elevateThreadCapabilities(void *L) {
+static bool elevateThreadCapabilities(void *L) {
+    if (!L) return false;
     void *extraSpace = NULL;
     if (!safeReadBytes((const uint8_t *)L + 0x78, &extraSpace, sizeof(extraSpace)) || !extraSpace) {
         logmsg("diag: elevateThreadCapabilities: couldn't read ExtraSpace for L=%p\n", L);
-        return;
+        return false;
     }
 
     uint64_t oldFlat = 0;
@@ -521,6 +522,7 @@ static void elevateThreadCapabilities(void *L) {
     bool wroteFlat = safeWriteBytes((void *)((uint8_t *)extraSpace + 0x40), &desiredFlat, sizeof(desiredFlat));
     logmsg("diag: elevateThreadCapabilities L=%p ExtraSpace=%p oldFlat=%#llx wroteFlat=%d\n",
            L, extraSpace, (unsigned long long)oldFlat, (int)wroteFlat);
+    return wroteFlat;
 }
 
 void VM_ElevateThreadCapabilities(void *L) {
@@ -1136,23 +1138,24 @@ extern "C" void *hookedStep(void *self, void *stats) {
                     gLastSwitchCheckMs = now;
                     maybeSwitchToAlternateJob(false);
                 }
-                if (now - gReadySinceMs >= VM_TOUCH_GRACE_MS) {
-                    if (!gElevatedThisCapture) {
-                        elevateThreadCapabilities(gCapturedLuaState);
+                if (gSearchStage == STAGE_READY && gCapturedLuaState && gCapturedScriptContext &&
+                    now - gReadySinceMs >= VM_TOUCH_GRACE_MS) {
+                    if (!gElevatedThisCapture && elevateThreadCapabilities(gCapturedLuaState)) {
                         gElevatedThisCapture = true;
                     }
+                    if (gElevatedThisCapture) {
+                        uint64_t ownerBefore = 0;
+                        safeReadBytes((const uint8_t *)gCapturedScriptContext + 0x658, &ownerBefore, sizeof(ownerBefore));
 
-                    uint64_t ownerBefore = 0;
-                    safeReadBytes((const uint8_t *)gCapturedScriptContext + 0x658, &ownerBefore, sizeof(ownerBefore));
+                        PluginLoader_RunPendingIfAny();
+                        DiscordPresence_Tick();
 
-                    PluginLoader_RunPendingIfAny();
-                    DiscordPresence_Tick();
-
-                    uint64_t ownerAfter = 0;
-                    safeReadBytes((const uint8_t *)gCapturedScriptContext + 0x658, &ownerAfter, sizeof(ownerAfter));
-                    if (ownerBefore != ownerAfter) {
-                        logmsg("diag: sc+0x658 owner-thread changed by our own VM call! before=0x%llx after=0x%llx calling pthread_self=%p\n",
-                               (unsigned long long)ownerBefore, (unsigned long long)ownerAfter, (void *)pthread_self());
+                        uint64_t ownerAfter = 0;
+                        safeReadBytes((const uint8_t *)gCapturedScriptContext + 0x658, &ownerAfter, sizeof(ownerAfter));
+                        if (ownerBefore != ownerAfter) {
+                            logmsg("diag: sc+0x658 owner-thread changed by our own VM call! before=0x%llx after=0x%llx calling pthread_self=%p\n",
+                                   (unsigned long long)ownerBefore, (unsigned long long)ownerAfter, (void *)pthread_self());
+                        }
                     }
                 }
             }

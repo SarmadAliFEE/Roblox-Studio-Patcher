@@ -69,15 +69,18 @@ __vmhook_pollFn = function()
 
         local ok2, documents = pcall(function() return game:GetService("ScriptEditorService"):GetScriptDocuments() end)
         if ok2 and documents then
-            for i = #documents, 1, -1 do
+            for i = 1, #documents do
                 local doc = documents[i]
                 local ok3, isCmd = pcall(function() return doc:IsCommandBar() end)
                 if ok3 and not isCmd then
-                    local ok4, line, char = pcall(function() return doc:GetSelectionStart() end)
-                    if ok4 then
-                        startLine, startCharacter = tostring(line), tostring(char)
+                    local ok5, docScript = pcall(function() return doc:GetScript() end)
+                    if ok5 and docScript == active then
+                        local ok4, line, char = pcall(function() return doc:GetSelectionStart() end)
+                        if ok4 and line then
+                            startLine, startCharacter = tostring(line), tostring(char)
+                        end
+                        break
                     end
-                    break
                 end
             end
         end

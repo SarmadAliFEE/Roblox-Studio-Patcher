@@ -46,6 +46,20 @@ static void storeResolved(const std::string &placeId, const std::string &name, c
     if (gInFlightPlaceId == placeId) gInFlightPlaceId.clear();
 }
 
+static NSURLSession *anonymousSession(void) {
+    static NSURLSession *session = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+        config.HTTPShouldSetCookies = NO;
+        config.HTTPCookieAcceptPolicy = NSHTTPCookieAcceptPolicyNever;
+        config.HTTPCookieStorage = nil;
+        config.URLCredentialStorage = nil;
+        session = [NSURLSession sessionWithConfiguration:config];
+    });
+    return session;
+}
+
 static NSString *jsonString(id obj, NSString *key) {
     if (![obj isKindOfClass:[NSDictionary class]]) return nil;
     id v = ((NSDictionary *)obj)[key];
@@ -71,7 +85,7 @@ static void fetchThumbnail(NSString *universeId, std::string placeId, std::strin
     NSString *urlStr = [NSString stringWithFormat:
         @"https://thumbnails.roblox.com/v1/games/icons?universeIds=%@&returnPolicy=PlaceHolder&size=512x512&format=Png&isCircular=false",
         universeId];
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession]
+    NSURLSessionDataTask *task = [anonymousSession()
         dataTaskWithURL:[NSURL URLWithString:urlStr]
         completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
             std::string thumbnailUrl;
@@ -84,21 +98,31 @@ static void fetchThumbnail(NSString *universeId, std::string placeId, std::strin
     [task resume];
 }
 
+static void checkPublicity(NSString *universeId, std::string placeId, std::string displayName) {
+    NSString *urlStr = [NSString stringWithFormat:@"https://games.roblox.com/v1/games?universeIds=%@", universeId];
+    NSURLSessionDataTask *task = [anonymousSession()
+        dataTaskWithURL:[NSURL URLWithString:urlStr]
+        completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+            id entry = firstDataEntry(data);
+            bool isPublic = entry && !jsonBool(entry, @"isContentRestricted", true);
+            fetchThumbnail(universeId, placeId, displayName, isPublic);
+        }];
+    [task resume];
+}
+
 static void fetchGameInfo(NSString *universeId, std::string placeId) {
     NSString *urlStr = [NSString stringWithFormat:@"https://games.roblox.com/v1/games?universeIds=%@", universeId];
     NSURLSessionDataTask *task = [[NSURLSession sharedSession]
         dataTaskWithURL:[NSURL URLWithString:urlStr]
         completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-            id entry = firstDataEntry(data);
-            NSString *name = jsonString(entry, @"name");
-            if (!name) {
-                logmsg("game info lookup failed for placeId %s (no data entry at all)\n", placeId.c_str());
-                storeResolved(placeId, "Place " + placeId, "", false);
-                return;
+            NSString *name = jsonString(firstDataEntry(data), @"name");
+            std::string displayName = "Place " + placeId;
+            if (name && ![name isEqualToString:@"[TITLE UNAVAILABLE]"]) {
+                displayName = name.UTF8String;
+            } else {
+                logmsg("game info lookup gave no usable name for placeId %s\n", placeId.c_str());
             }
-            bool isContentRestricted = jsonBool(entry, @"isContentRestricted", true);
-            std::string displayName = isContentRestricted ? ("Place " + placeId) : name.UTF8String;
-            fetchThumbnail(universeId, placeId, displayName, !isContentRestricted);
+            checkPublicity(universeId, placeId, displayName);
         }];
     [task resume];
 }

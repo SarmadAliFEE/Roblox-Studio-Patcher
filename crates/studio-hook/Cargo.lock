@@ -118,6 +118,7 @@ dependencies = [
  "cc",
  "libc",
  "mach2",
+ "memchr",
  "serde_json",
  "windows-sys",
 ]

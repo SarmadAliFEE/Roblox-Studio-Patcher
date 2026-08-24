@@ -1,4 +1,6 @@
 pub mod mem;
+pub mod platform;
+pub mod scan;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -25,9 +27,8 @@ pub(crate) fn log(message: &str) {
 }
 
 fn on_loaded() {
-    log("studio-hook loaded");
-    let probe: mem::MemResult<u64> = mem::read(0x0000_7ffe_dead_0000);
-    log(&format!("mem layer: unmapped probe -> {probe:?}"));
+    let Some(image) = platform::find_main_image() else { return };
+    log(&format!("studio-hook loaded, image slide=0x{:x}", image.slide));
 }
 
 #[cfg(target_os = "macos")]

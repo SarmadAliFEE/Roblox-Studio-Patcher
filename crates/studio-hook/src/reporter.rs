@@ -171,7 +171,8 @@ mod crash {
 
     static WRITE_FD: AtomicI32 = AtomicI32::new(-1);
 
-    const SIGNALS: [i32; 5] = [libc::SIGSEGV, libc::SIGBUS, libc::SIGILL, libc::SIGFPE, libc::SIGABRT];
+    const SIGNALS: [i32; 6] =
+        [libc::SIGSEGV, libc::SIGBUS, libc::SIGILL, libc::SIGFPE, libc::SIGABRT, libc::SIGTRAP];
 
     pub fn install(webhook: String) {
         let Some(write_fd) = spawn_helper(&webhook) else { return };

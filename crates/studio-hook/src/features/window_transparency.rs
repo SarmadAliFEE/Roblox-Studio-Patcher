@@ -95,9 +95,16 @@ fn parse_hotkey(spec: &str) -> Option<Hotkey> {
     Some(hotkey)
 }
 
-// ---------------------------------------------------------------------------
-// macOS: alpha on NSWindows, hotkeys via a local NSEvent monitor.
-// ---------------------------------------------------------------------------
+fn persist_opacity(opacity: f64) {
+    let Ok(text) = std::fs::read_to_string(CONFIG_PATH) else { return };
+    let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+    if let Some(object) = json.as_object_mut() {
+        object.insert("opacity".to_owned(), serde_json::json!(opacity));
+        let _ = std::fs::write(CONFIG_PATH, serde_json::to_string_pretty(&json).unwrap_or(text));
+    }
+}
+
+
 #[cfg(target_os = "macos")]
 mod imp {
     use core::ffi::{CStr, c_char, c_void};
@@ -215,6 +222,7 @@ mod imp {
             state.opacity
         };
         apply(opacity);
+        super::persist_opacity(opacity);
         true
     }
 
@@ -273,9 +281,6 @@ mod imp {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Windows: alpha via layered windows, hotkeys polled off a message timer.
-// ---------------------------------------------------------------------------
 #[cfg(target_os = "windows")]
 mod imp {
     use std::sync::Mutex;
@@ -369,6 +374,7 @@ mod imp {
         };
         if let Some(opacity) = opacity {
             apply(opacity);
+            super::persist_opacity(opacity);
         }
     }
 

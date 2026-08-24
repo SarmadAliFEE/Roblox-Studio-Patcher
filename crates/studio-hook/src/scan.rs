@@ -87,6 +87,25 @@ impl Pattern {
     }
 }
 
+pub fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    memchr::memmem::find(haystack, needle)
+}
+
+pub fn find_aligned_usize(haystack: &[u8], base: usize, value: usize) -> Vec<usize> {
+    let mut hits = Vec::new();
+    let skew = base % 8;
+    let start = if skew == 0 { 0 } else { 8 - skew };
+    let wanted = value.to_ne_bytes();
+    let mut at = start;
+    while at + 8 <= haystack.len() {
+        if haystack[at..at + 8] == wanted {
+            hits.push(base + at);
+        }
+        at += 8;
+    }
+    hits
+}
+
 pub fn decode_arm64_bl(instruction: u32, instruction_addr: usize) -> Option<usize> {
     if instruction >> 26 != 0b100101 {
         return None;
@@ -144,6 +163,15 @@ mod tests {
         let pattern = Pattern::parse("C3 90 90").expect("valid");
         let haystack = [0x00, 0x00, 0xC3, 0x90];
         assert!(pattern.find_all(&haystack).is_empty());
+    }
+
+    #[test]
+    fn finds_aligned_pointers_respecting_base_skew() {
+        let value = 0x0000_7f11_2233_4455usize;
+        let mut buf = vec![0u8; 32];
+        buf[8..16].copy_from_slice(&value.to_ne_bytes());
+        assert_eq!(find_aligned_usize(&buf, 0x1000, value), vec![0x1008]);
+        assert!(find_aligned_usize(&buf, 0x1004, value).is_empty());
     }
 
     #[test]

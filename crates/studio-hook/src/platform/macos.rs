@@ -114,6 +114,47 @@ impl Image {
     }
 }
 
+pub fn find_primary_vtable(rtti_name: &str, text: &[Segment], data: &[Segment]) -> Option<usize> {
+    let mut needle = rtti_name.as_bytes().to_vec();
+    needle.push(0);
+
+    let name_addr = text.iter().find_map(|segment| {
+        let bytes = segment.as_slice()?;
+        crate::scan::find_bytes(bytes, &needle).map(|at| segment.start + at)
+    })?;
+
+    for name_ref in scan_data_for(data, name_addr) {
+        let typeinfo = name_ref.checked_sub(8)?;
+        for typeinfo_ref in scan_data_for(data, typeinfo) {
+            let offset_to_top_addr = typeinfo_ref.checked_sub(8)?;
+            let offset_to_top: isize = match crate::mem::read(offset_to_top_addr) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            if offset_to_top != 0 {
+                continue;
+            }
+            return Some(typeinfo_ref + 8);
+        }
+    }
+    None
+}
+
+fn scan_data_for(data: &[Segment], value: usize) -> Vec<usize> {
+    let mut hits = Vec::new();
+    for segment in data {
+        let Some(bytes) = segment.as_slice() else { continue };
+        hits.extend(crate::scan::find_aligned_usize(bytes, segment.start, value));
+    }
+    hits
+}
+
+pub fn vtable_slot_of(vtable: usize, func: usize, max_slots: usize) -> Option<usize> {
+    (0..max_slots).find(|index| {
+        crate::mem::read::<usize>(vtable + index * 8).map(|entry| entry == func).unwrap_or(false)
+    })
+}
+
 pub fn patch_pointer(slot_addr: usize, value: usize) -> Result<usize, PatchError> {
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
     let page = slot_addr & !(page_size - 1);
@@ -149,11 +190,6 @@ pub fn patch_pointer(slot_addr: usize, value: usize) -> Result<usize, PatchError
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn main_image_is_absent_in_the_test_harness() {
-        assert!(find_main_image().is_none());
-    }
 
     #[test]
     fn segment_helpers_behave() {

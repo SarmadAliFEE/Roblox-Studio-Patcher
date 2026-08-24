@@ -45,4 +45,5 @@ cc = "1.2"
 opt-level = 3
 codegen-units = 1
 panic = "unwind"
+lto = true
 strip = true

@@ -28,8 +28,14 @@ pub(crate) fn log(message: &str) {
 }
 
 fn on_loaded() {
-    let Some(image) = platform::find_main_image() else { return };
-    log(&format!("studio-hook loaded, image slide=0x{:x}", image.slide));
+    match vm::resolve::resolve() {
+        Ok(resolved) => log(&format!(
+            "studio-hook: resolved step={:#x}, {} job vtable(s)",
+            resolved.step,
+            resolved.jobs.len()
+        )),
+        Err(err) => log(&format!("studio-hook: resolve failed: {err:?}")),
+    }
 }
 
 #[cfg(target_os = "macos")]

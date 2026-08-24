@@ -1,3 +1,6 @@
+pub mod resolve;
+pub mod signatures;
+
 use crate::mem;
 
 pub const L_STACK_LIMIT: usize = 0x50;

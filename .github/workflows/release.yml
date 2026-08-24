@@ -1,0 +1,65 @@
+name: build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --release --manifest-path crates/studio-hook/Cargo.toml
+      - run: cargo build --release
+      - name: stage
+        run: |
+          mkdir -p dist
+          cp target/release/studio-patcher dist/Roblox-Studio-Patcher-mac-silicon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Roblox-Studio-Patcher-mac-silicon
+          path: dist/Roblox-Studio-Patcher-mac-silicon
+
+  windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+      - name: mingw-w64
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+      - name: cross build
+        run: |
+          chmod +x scripts/mingw-link-wrapper.sh
+          cargo build --release --target x86_64-pc-windows-gnu
+      - name: stage
+        run: |
+          mkdir -p dist
+          cp target/x86_64-pc-windows-gnu/release/studio-patcher.exe dist/Roblox-Studio-Patcher-windows.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Roblox-Studio-Patcher-windows.exe
+          path: dist/Roblox-Studio-Patcher-windows.exe
+
+  release:
+    needs: [macos, windows]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

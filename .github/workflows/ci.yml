@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: studio-hook tests
+        run: cargo test --release --manifest-path crates/studio-hook/Cargo.toml
+      - name: build cli (macos)
+        run: cargo build
+
+  windows-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+      - name: mingw-w64
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+      - name: check windows target
+        run: |
+          chmod +x scripts/mingw-link-wrapper.sh
+          cargo check --target x86_64-pc-windows-gnu

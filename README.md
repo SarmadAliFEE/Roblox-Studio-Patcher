@@ -54,7 +54,6 @@ all opt-in - the default run asks, or reach for the flag.
 - script editor background - `EditorBackground.json`, blank `image` = off
 - window transparency - `WindowTransparency.json`, ctrl+=/ctrl+- on mac, alt+=/alt+- on windows
 - discord presence (`--discord`, mac for now) - place name, active script, cursor line, testing status, a thumbnail
-- webhook logging (`--webhook-logging`) - forwards every log line, panic, and native crash to a discord webhook. crash reports are sent from a separate helper process, so they still go out even if the heap is corrupted. `Logger.json`
 
 `--inject path/to/thing.dylib` / `.dll` loads your own hook instead.
 

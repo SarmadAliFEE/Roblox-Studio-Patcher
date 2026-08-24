@@ -39,8 +39,6 @@ pub fn init() {
     report(&format!("logger online - pid {} - {}", std::process::id(), os_line()));
 }
 
-/// Appends a line to the accumulated log; the whole thing is uploaded as one
-/// `.log` file (edited in place) when logging is enabled.
 pub fn report(message: &str) {
     {
         let mut log = LOG.lock().unwrap_or_else(|p| p.into_inner());
@@ -175,15 +173,24 @@ mod crash {
     use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
     static WRITE_FD: AtomicI32 = AtomicI32::new(-1);
+    static IMAGE_BASE: AtomicUsize = AtomicUsize::new(0);
     static PREV_HANDLER: [AtomicUsize; 6] = [const { AtomicUsize::new(0) }; 6];
     static PREV_FLAGS: [AtomicI32; 6] = [const { AtomicI32::new(0) }; 6];
 
     const SIGNALS: [i32; 6] =
         [libc::SIGSEGV, libc::SIGBUS, libc::SIGILL, libc::SIGFPE, libc::SIGABRT, libc::SIGTRAP];
 
+    unsafe extern "C" {
+        fn backtrace(buffer: *mut *mut c_void, size: i32) -> i32;
+    }
+
     pub fn install(webhook: String) {
         let Some(write_fd) = spawn_helper(&webhook) else { return };
         WRITE_FD.store(write_fd, Ordering::Release);
+        // Main-executable base so backtrace addresses resolve to offsets.
+        if let Some(image) = crate::platform::find_main_image() {
+            IMAGE_BASE.store(image.base(), Ordering::Release);
+        }
 
         unsafe {
             let stack_size = libc::SIGSTKSZ.max(64 * 1024);
@@ -236,21 +243,27 @@ mod crash {
     extern "C" fn handler(signal: i32, info: *mut libc::siginfo_t, ctx: *mut c_void) {
         let fault = unsafe { info.as_ref() }.map(|i| unsafe { i.si_addr() } as usize).unwrap_or(0);
 
-        // Async-signal-safe formatting into a stack buffer: "CRASH signal=NN addr=0x...".
-        let mut buf = [0u8; 96];
+        // heap use - safe even with a corrupt heap).
+        let mut buf = [0u8; 768];
         let mut len = 0;
-        for &b in b"CRASH signal=" {
-            buf[len] = b;
-            len += 1;
-        }
+        len = append(&mut buf, len, b"CRASH signal=");
         len += write_uint(&mut buf[len..], signal as u64, 10);
-        for &b in b" addr=0x" {
-            buf[len] = b;
-            len += 1;
-        }
+        len = append(&mut buf, len, b" addr=0x");
         len += write_uint(&mut buf[len..], fault as u64, 16);
-        buf[len] = b'\n';
-        len += 1;
+        len = append(&mut buf, len, b" base=0x");
+        len += write_uint(&mut buf[len..], IMAGE_BASE.load(Ordering::Acquire) as u64, 16);
+
+        len = append(&mut buf, len, b" stack=");
+        let mut frames: [*mut c_void; 32] = [core::ptr::null_mut(); 32];
+        let count = unsafe { backtrace(frames.as_mut_ptr(), frames.len() as i32) };
+        for i in 0..count.max(0) as usize {
+            if i > 0 {
+                len = append(&mut buf, len, b",");
+            }
+            len = append(&mut buf, len, b"0x");
+            len += write_uint(&mut buf[len..], frames[i] as u64, 16);
+        }
+        len = append(&mut buf, len, b"\n");
 
         let fd = WRITE_FD.load(Ordering::Acquire);
         if fd >= 0 {
@@ -287,6 +300,16 @@ mod crash {
         }
     }
 
+    fn append(buf: &mut [u8], mut len: usize, bytes: &[u8]) -> usize {
+        for &b in bytes {
+            if len < buf.len() {
+                buf[len] = b;
+                len += 1;
+            }
+        }
+        len
+    }
+
     fn write_uint(out: &mut [u8], mut value: u64, radix: u64) -> usize {
         const DIGITS: &[u8] = b"0123456789abcdef";
         let mut tmp = [0u8; 20];
@@ -318,14 +341,17 @@ mod crash {
 
     use windows_sys::Win32::Storage::FileSystem::WriteFile;
     use windows_sys::Win32::System::Diagnostics::Debug::{
-        EXCEPTION_CONTINUE_SEARCH, EXCEPTION_POINTERS, SetUnhandledExceptionFilter,
+        EXCEPTION_CONTINUE_SEARCH, EXCEPTION_POINTERS, RtlCaptureStackBackTrace,
+        SetUnhandledExceptionFilter,
     };
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Threading::Sleep;
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     static WRITE_HANDLE: AtomicUsize = AtomicUsize::new(0);
     static PREV_FILTER: AtomicUsize = AtomicUsize::new(0);
+    static IMAGE_BASE: AtomicUsize = AtomicUsize::new(0);
 
     type FilterFn = unsafe extern "system" fn(*const EXCEPTION_POINTERS) -> i32;
 
@@ -333,6 +359,7 @@ mod crash {
         if !spawn_helper(&webhook) {
             return;
         }
+        IMAGE_BASE.store(unsafe { GetModuleHandleW(core::ptr::null()) } as usize, Ordering::Release);
         // Chain to whatever was already registered (Roblox's own crash handler)
         // so their reporting still runs after ours.
         let previous = unsafe { SetUnhandledExceptionFilter(Some(handler)) };
@@ -370,20 +397,26 @@ mod crash {
                 .unwrap_or((0, 0))
         };
 
-        let mut buf = [0u8; 96];
+        let mut buf = [0u8; 768];
         let mut len = 0;
-        for &b in b"CRASH exception=0x" {
-            buf[len] = b;
-            len += 1;
-        }
+        len = append(&mut buf, len, b"CRASH exception=0x");
         len += write_uint(&mut buf[len..], code, 16);
-        for &b in b" addr=0x" {
-            buf[len] = b;
-            len += 1;
-        }
+        len = append(&mut buf, len, b" addr=0x");
         len += write_uint(&mut buf[len..], address as u64, 16);
-        buf[len] = b'\n';
-        len += 1;
+        len = append(&mut buf, len, b" base=0x");
+        len += write_uint(&mut buf[len..], IMAGE_BASE.load(Ordering::Acquire) as u64, 16);
+
+        len = append(&mut buf, len, b" stack=");
+        let mut frames: [*mut c_void; 32] = [core::ptr::null_mut(); 32];
+        let count = unsafe { RtlCaptureStackBackTrace(0, frames.len() as u32, frames.as_mut_ptr(), core::ptr::null_mut()) };
+        for i in 0..count as usize {
+            if i > 0 {
+                len = append(&mut buf, len, b",");
+            }
+            len = append(&mut buf, len, b"0x");
+            len += write_uint(&mut buf[len..], frames[i] as u64, 16);
+        }
+        len = append(&mut buf, len, b"\n");
 
         let handle = WRITE_HANDLE.load(Ordering::Acquire);
         if handle != 0 {
@@ -400,6 +433,16 @@ mod crash {
             return unsafe { previous(info) };
         }
         EXCEPTION_CONTINUE_SEARCH
+    }
+
+    fn append(buf: &mut [u8], mut len: usize, bytes: &[u8]) -> usize {
+        for &b in bytes {
+            if len < buf.len() {
+                buf[len] = b;
+                len += 1;
+            }
+        }
+        len
     }
 
     fn write_uint(out: &mut [u8], mut value: u64, radix: u64) -> usize {

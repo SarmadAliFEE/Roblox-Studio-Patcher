@@ -77,6 +77,10 @@ pub fn find_main_image() -> Option<Image> {
 }
 
 impl Image {
+    pub fn base(&self) -> usize {
+        self.header as usize
+    }
+
     pub fn segments_with_prefix(&self, prefix: &str) -> Vec<Segment> {
         let mut out = Vec::new();
         let header = self.header;

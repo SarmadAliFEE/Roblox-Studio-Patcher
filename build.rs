@@ -23,14 +23,54 @@ fn build_hook_dll(out_dir: &PathBuf, source: &str, dll_name: &str, extra_libs: &
     }
 }
 
+fn build_studio_hook(out_dir: &PathBuf, target: &str, target_os: &str) {
+    println!("cargo:rerun-if-changed=crates/studio-hook/src");
+    println!("cargo:rerun-if-changed=crates/studio-hook/build.rs");
+    println!("cargo:rerun-if-changed=crates/studio-hook/Cargo.toml");
+
+    let hook_target_dir: PathBuf = out_dir.join("studio-hook-build");
+    let cargo: String = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let ok: bool = Command::new(cargo)
+        .args([
+            "build", "--release",
+            "--manifest-path", "crates/studio-hook/Cargo.toml",
+            "--target", target,
+            "--target-dir",
+        ])
+        .arg(&hook_target_dir)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("CARGO_TARGET_DIR")
+        .status()
+        .expect("couldn't run cargo to build the studio-hook payload")
+        .success();
+    if !ok {
+        panic!("failed to build the studio-hook cdylib payload");
+    }
+
+    let (built, embedded): (&str, &str) = if target_os == "windows" {
+        ("studio_hook.dll", "studio_hook_payload.dll")
+    } else {
+        ("libstudio_hook.dylib", "libstudio_hook_payload.dylib")
+    };
+    let src: PathBuf = hook_target_dir.join(target).join("release").join(built);
+    std::fs::copy(&src, out_dir.join(embedded))
+        .unwrap_or_else(|e| panic!("couldn't stage studio-hook payload from {}: {e}", src.display()));
+}
+
 fn main() {
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+    let out_dir: PathBuf = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let target: String = env::var("TARGET").unwrap();
+    let target_os: String = env::var("CARGO_CFG_TARGET_OS").unwrap();
+
+    build_studio_hook(&out_dir, &target, &target_os);
+
+    if target_os != "windows" {
         println!("cargo:rerun-if-changed=hooks/editor_background/editor_background_windows.cpp");
         println!("cargo:rerun-if-changed=hooks/window_transparency/window_transparency_windows.cpp");
         return;
     }
 
-    let out_dir: PathBuf = PathBuf::from(env::var("OUT_DIR").unwrap());
     build_hook_dll(
         &out_dir,
         "hooks/editor_background/editor_background_windows.cpp",

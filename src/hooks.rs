@@ -5,6 +5,52 @@ use anyhow::Result;
 use crate::Args;
 
 #[cfg(not(target_os = "windows"))]
+const STUDIO_HOOK_DYLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libstudio_hook_payload.dylib"));
+
+/// Injects the studio-hook payload (discord rich presence + luau vm bridge).
+#[cfg(not(target_os = "windows"))]
+pub fn install_studio_hook(macho_path: &Path, args: &Args) -> Result<()> {
+    use crate::{binary, inject, themes};
+
+    std::fs::create_dir_all(themes::THEMES_DIR)?;
+    let dylib_path: std::path::PathBuf = Path::new(themes::THEMES_DIR).join("studio_hook.dylib");
+    std::fs::write(&dylib_path, STUDIO_HOOK_DYLIB)?;
+
+    binary::kill_running_studio(macho_path, args)?;
+    if !args.no_backup {
+        binary::backup(macho_path)?;
+    }
+    inject::inject_dylib(macho_path, &dylib_path.to_string_lossy())?;
+    if !args.no_resign {
+        binary::resign(macho_path)?;
+    }
+    println!("discord rich presence hook installed");
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+const STUDIO_HOOK_DLL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/studio_hook_payload.dll"));
+
+#[cfg(target_os = "windows")]
+pub fn install_studio_hook(exe_path: &Path, args: &Args) -> Result<()> {
+    use anyhow::Context;
+
+    use crate::{binary, inject};
+
+    let exe_dir: &Path = exe_path.parent().context("exe path has no parent directory")?;
+    let dll_path: std::path::PathBuf = exe_dir.join("studio_hook.dll");
+    std::fs::write(&dll_path, STUDIO_HOOK_DLL)?;
+
+    binary::kill_running_studio(exe_path, args)?;
+    if !args.no_backup {
+        binary::backup(exe_path)?;
+    }
+    inject::inject_dylib(exe_path, &dll_path.to_string_lossy())?;
+    println!("discord rich presence hook installed");
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
 const EDITOR_BACKGROUND_SOURCE: &str = include_str!("../hooks/editor_background/editor_background.mm");
 
 /// Compiles and injects the script-editor-background hook.

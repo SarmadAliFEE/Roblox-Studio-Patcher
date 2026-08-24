@@ -59,6 +59,10 @@ pub struct Args {
     #[arg(long)]
     inject: Option<String>,
 
+    /// Install the discord rich presence hook.
+    #[arg(long)]
+    discord: bool,
+
     /// Print candidate globals/permission-check sites without patching.
     #[arg(long)]
     discover: bool,
@@ -125,6 +129,13 @@ fn run_auto(target: &std::path::Path, macho_path: &std::path::Path, args: &Args)
             println!("hook install failed ({e})");
         }
     }
+
+    println!("another hook: discord rich presence showing the place and script you're editing");
+    if ask_yn("enable discord rich presence?") {
+        if let Err(e) = hooks::install_studio_hook(macho_path, args) {
+            println!("hook install failed ({e})");
+        }
+    }
     Ok(())
 }
 
@@ -175,6 +186,10 @@ fn main() -> Result<()> {
         if !args.no_resign && !is_pe {
             binary::resign(&macho_path)?;
         }
+        did_something = true;
+    }
+    if args.discord {
+        hooks::install_studio_hook(&macho_path, &args)?;
         did_something = true;
     }
     if args.watch {

@@ -17,7 +17,7 @@ regex = "1.13.1"
 self-replace = "1.5.0"
 
 [profile.release]
-opt-level = 3
+opt-level = "z"
 strip = true
 codegen-units = 1
 panic = "abort"

@@ -21,7 +21,7 @@ fn main() {
     build
         .cpp(true)
         .std("c++17")
-        .opt_level(2)
+        .opt_level_str("s")
         .warnings(false)
         .define("LUACODE_API", "extern \"C\"")
         .include(luau.join("Ast/include"))

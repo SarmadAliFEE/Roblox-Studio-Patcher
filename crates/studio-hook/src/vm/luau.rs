@@ -126,6 +126,7 @@ mod tests {
 
     #[test]
     fn compiles_valid_source_to_versioned_bytecode() {
+        enable_luau_flags();
         let bytecode = compile("return 1 + 1").expect("valid source compiles");
         assert!(!bytecode.is_empty());
         assert_eq!(bytecode.as_slice()[0], 13, "must emit the bytecode version Studio accepts");
@@ -142,6 +143,7 @@ mod tests {
 
     #[test]
     fn compiles_the_kind_of_script_the_hook_actually_runs() {
+        enable_luau_flags();
         let source = r#"
             local placeId = tostring(game.PlaceId)
             local ok, active = pcall(function()

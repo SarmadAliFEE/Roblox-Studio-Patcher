@@ -107,6 +107,70 @@ impl Image {
     }
 }
 
+fn scan_data_for(data: &[Segment], value: usize) -> Vec<usize> {
+    let mut hits = Vec::new();
+    for segment in data {
+        let Some(bytes) = segment.as_slice() else { continue };
+        hits.extend(crate::scan::find_aligned_usize(bytes, segment.start, value));
+    }
+    hits
+}
+
+fn scan_data_for_rva(data: &[Segment], value: u32) -> Vec<usize> {
+    let mut hits = Vec::new();
+    for segment in data {
+        let Some(bytes) = segment.as_slice() else { continue };
+        hits.extend(crate::scan::find_aligned_u32(bytes, segment.start, value));
+    }
+    hits
+}
+
+const COL_SIGNATURE_OFFSET: usize = 0;
+const COL_OFFSET_OFFSET: usize = 4;
+const COL_TYPE_DESCRIPTOR_OFFSET: usize = 12;
+const COL_SELF_OFFSET: usize = 20;
+const TYPE_DESCRIPTOR_NAME_OFFSET: usize = 16;
+
+pub fn find_primary_vtable(rtti_name: &str, _text: &[Segment], data: &[Segment]) -> Option<usize> {
+    let base = unsafe { GetModuleHandleW(core::ptr::null()) } as usize;
+    if base == 0 {
+        return None;
+    }
+
+    let mut needle = rtti_name.as_bytes().to_vec();
+    needle.push(0);
+    let name_addr = data.iter().find_map(|segment| {
+        let bytes = segment.as_slice()?;
+        crate::scan::find_bytes(bytes, &needle).map(|at| segment.start + at)
+    })?;
+
+    let type_descriptor = name_addr.checked_sub(TYPE_DESCRIPTOR_NAME_OFFSET)?;
+    let type_descriptor_rva = (type_descriptor.checked_sub(base)?) as u32;
+
+    for descriptor_ref in scan_data_for_rva(data, type_descriptor_rva) {
+        let locator = descriptor_ref.checked_sub(COL_TYPE_DESCRIPTOR_OFFSET)?;
+        let signature: u32 = crate::mem::read(locator + COL_SIGNATURE_OFFSET).ok()?;
+        let offset: u32 = crate::mem::read(locator + COL_OFFSET_OFFSET).ok()?;
+        let self_rva: u32 = crate::mem::read(locator + COL_SELF_OFFSET).ok()?;
+        if signature != 1 || offset != 0 {
+            continue;
+        }
+        if self_rva as usize != locator.wrapping_sub(base) {
+            continue;
+        }
+        if let Some(vtable_ref) = scan_data_for(data, locator).into_iter().next() {
+            return Some(vtable_ref + 8);
+        }
+    }
+    None
+}
+
+pub fn vtable_slot_of(vtable: usize, func: usize, max_slots: usize) -> Option<usize> {
+    (0..max_slots).find(|index| {
+        crate::mem::read::<usize>(vtable + index * 8).map(|entry| entry == func).unwrap_or(false)
+    })
+}
+
 pub fn patch_pointer(slot_addr: usize, value: usize) -> Result<usize, PatchError> {
     let previous: usize = crate::mem::read(slot_addr).map_err(|_| PatchError::Write)?;
 

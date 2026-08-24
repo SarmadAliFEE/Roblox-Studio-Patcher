@@ -49,6 +49,17 @@ mod arch {
     pub const CAN_ACCESS_RESTRICTED_BL: usize = 0x18;
 }
 
+#[cfg(not(target_arch = "aarch64"))]
+mod arch {
+    pub const STEP: &str = "";
+    pub const LUAU_LOAD_WRAPPER: &str = "";
+    pub const CALL_DISPATCH: &str = "";
+    pub const TASK_DEFER: &str = "";
+    pub const LUA_NEWTHREAD: &str = "";
+    pub const CAN_ACCESS_RESTRICTED: &str = "";
+    pub const CAN_ACCESS_RESTRICTED_BL: usize = 0;
+}
+
 pub use arch::*;
 
 pub const DATA_MODEL_RTTI: &str = "N3RBX9DataModelE";

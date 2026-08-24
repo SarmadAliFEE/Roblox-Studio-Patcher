@@ -106,6 +106,21 @@ pub fn find_aligned_usize(haystack: &[u8], base: usize, value: usize) -> Vec<usi
     hits
 }
 
+pub fn find_aligned_u32(haystack: &[u8], base: usize, value: u32) -> Vec<usize> {
+    let mut hits = Vec::new();
+    let skew = base % 4;
+    let start = if skew == 0 { 0 } else { 4 - skew };
+    let wanted = value.to_ne_bytes();
+    let mut at = start;
+    while at + 4 <= haystack.len() {
+        if haystack[at..at + 4] == wanted {
+            hits.push(base + at);
+        }
+        at += 4;
+    }
+    hits
+}
+
 pub fn decode_arm64_bl(instruction: u32, instruction_addr: usize) -> Option<usize> {
     if instruction >> 26 != 0b100101 {
         return None;

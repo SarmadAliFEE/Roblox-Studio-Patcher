@@ -21,6 +21,7 @@ pub enum InstallError {
     Resolve(ResolveError),
     NoVtables,
     NoSlots,
+    Unsupported,
 }
 
 unsafe extern "C" fn hooked_step(job: *mut c_void, stats: *mut c_void) -> *mut c_void {
@@ -73,6 +74,11 @@ fn drive_idle() {
 }
 
 pub fn install() -> Result<usize, InstallError> {
+    if cfg!(not(target_arch = "aarch64")) {
+        crate::log("studio-hook: vm hook (discord presence) is arm64-only for now");
+        return Err(InstallError::Unsupported);
+    }
+
     let flags = crate::vm::luau::enable_luau_flags();
     crate::log(&format!("luau: enabled {flags} compiler flag(s)"));
 

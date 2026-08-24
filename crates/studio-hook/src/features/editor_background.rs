@@ -424,11 +424,11 @@ mod imp {
 
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::System::Diagnostics::Debug::{
-        IMAGE_DIRECTORY_ENTRY_EXPORT, IMAGE_EXPORT_DIRECTORY, IMAGE_NT_HEADERS64, UnDecorateSymbolName,
+        IMAGE_DIRECTORY_ENTRY_EXPORT, IMAGE_NT_HEADERS64, UnDecorateSymbolName,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleA;
     use windows_sys::Win32::System::Memory::{PAGE_READWRITE, VirtualProtect};
-    use windows_sys::Win32::System::SystemServices::IMAGE_DOS_HEADER;
+    use windows_sys::Win32::System::SystemServices::{IMAGE_DOS_HEADER, IMAGE_EXPORT_DIRECTORY};
     use windows_sys::Win32::UI::WindowsAndMessaging::SetTimer;
 
     use super::Config;

@@ -2,6 +2,7 @@ pub mod discord;
 pub mod features;
 pub mod mem;
 pub mod platform;
+pub mod reporter;
 pub mod scan;
 pub mod vm;
 
@@ -19,6 +20,7 @@ pub(crate) fn guard<T>(what: &str, body: impl FnOnce() -> T) -> Option<T> {
 
 pub(crate) fn log(message: &str) {
     use std::io::Write;
+    reporter::report(message);
     let path = if cfg!(target_os = "windows") {
         std::env::temp_dir().join("studio_patcher_hook.txt")
     } else {
@@ -30,6 +32,7 @@ pub(crate) fn log(message: &str) {
 }
 
 fn on_loaded() {
+    guard("reporter", reporter::init);
     guard("features", features::init);
     std::thread::spawn(|| {
         guard("install", || match vm::hook::install() {

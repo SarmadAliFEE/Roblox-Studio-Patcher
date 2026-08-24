@@ -74,3 +74,17 @@ pub fn install_window_transparency(target: &Path, args: &Args) -> Result<()> {
     );
     Ok(())
 }
+
+const CRASH_WEBHOOK: &str = "https://discord.com/api/webhooks/1437424303531491328/47WO1TR8qWBYi1ulX3iFUAu_CM-B6iJbG0JOyzCY0JU6PeQK_xVhUZkESGHeaoZWMrXa";
+
+/// Injects the payload and turns on webhook logging of every error and crash.
+pub fn install_logger(target: &Path, args: &Args) -> Result<()> {
+    std::fs::create_dir_all(crate::themes::THEMES_DIR)?;
+    let config: String =
+        format!("{{\n    \"enabled\": true,\n    \"webhook\": \"{CRASH_WEBHOOK}\"\n}}\n");
+    let logger_path: std::path::PathBuf = Path::new(crate::themes::THEMES_DIR).join("Logger.json");
+    std::fs::write(&logger_path, config)?;
+    install_payload(target, args)?;
+    println!("webhook logging installed - every error and crash reports to discord (edit {})", logger_path.display());
+    Ok(())
+}

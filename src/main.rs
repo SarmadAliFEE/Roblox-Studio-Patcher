@@ -63,6 +63,10 @@ pub struct Args {
     #[arg(long)]
     discord: bool,
 
+    /// Report every error and crash to a discord webhook.
+    #[arg(long)]
+    webhook_logging: bool,
+
     /// Print candidate globals/permission-check sites without patching.
     #[arg(long)]
     discover: bool,
@@ -136,6 +140,13 @@ fn run_auto(target: &std::path::Path, macho_path: &std::path::Path, args: &Args)
             println!("hook install failed ({e})");
         }
     }
+
+    println!("optional: report every error and crash to a discord webhook (for debugging)");
+    if ask_yn("enable webhook logging?") {
+        if let Err(e) = hooks::install_logger(macho_path, args) {
+            println!("hook install failed ({e})");
+        }
+    }
     Ok(())
 }
 
@@ -190,6 +201,10 @@ fn main() -> Result<()> {
     }
     if args.discord {
         hooks::install_studio_hook(&macho_path, &args)?;
+        did_something = true;
+    }
+    if args.webhook_logging {
+        hooks::install_logger(&macho_path, &args)?;
         did_something = true;
     }
     if args.watch {

@@ -11,6 +11,8 @@ type StepFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void;
 
 static ORIGINAL_STEP: AtomicUsize = AtomicUsize::new(0);
 static DISCOVERY: Mutex<Option<Discovery>> = Mutex::new(None);
+static PRIMITIVES: Mutex<Option<crate::vm::exec::Primitives>> = Mutex::new(None);
+static PROBED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Debug)]
 pub enum InstallError {
@@ -20,7 +22,11 @@ pub enum InstallError {
 }
 
 unsafe extern "C" fn hooked_step(job: *mut c_void, stats: *mut c_void) -> *mut c_void {
-    crate::guard("step", || observe(job as usize));
+    crate::guard("step", || {
+        if let Some(ready) = observe(job as usize) {
+            probe(ready);
+        }
+    });
 
     let original = ORIGINAL_STEP.load(Ordering::Acquire);
     debug_assert!(original != 0, "hook installed before the original was recorded");
@@ -28,17 +34,39 @@ unsafe extern "C" fn hooked_step(job: *mut c_void, stats: *mut c_void) -> *mut c
     unsafe { original(job, stats) }
 }
 
-fn observe(job: usize) {
-    let Ok(mut slot) = DISCOVERY.try_lock() else { return };
-    let Some(discovery) = slot.as_mut() else { return };
+fn observe(job: usize) -> Option<crate::vm::discovery::Ready> {
+    let Ok(mut slot) = DISCOVERY.try_lock() else { return None };
+    let Some(discovery) = slot.as_mut() else { return None };
 
-    match discovery.on_step(job, Instant::now()) {
+    let event = discovery.on_step(job, Instant::now());
+    if let Event::Live(ready) = event {
+        if std::env::var("STUDIO_HOOK_PROBE").is_ok() && !PROBED.swap(true, Ordering::AcqRel) {
+            return Some(ready);
+        }
+    }
+
+    match event {
         Event::Became(ready) => crate::log(&format!(
             "capture ready: job={:#x} datamodel={:#x} scriptcontext={:#x} lua_state={:#x}",
             ready.job, ready.data_model, ready.script_context, ready.lua_state
         )),
         Event::Dropped(why) => crate::log(&format!("capture dropped: {why}")),
         _ => {}
+    }
+    None
+}
+
+fn probe(ready: crate::vm::discovery::Ready) {
+    let Ok(slot) = PRIMITIVES.try_lock() else { return };
+    let Some(primitives) = slot.as_ref() else { return };
+
+    let source = "return 1 + 1";
+    match crate::vm::exec::run(ready.lua_state, primitives, source, "=StudioHookProbe") {
+        Ok(values) => {
+            let rendered: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+            crate::log(&format!("probe ok: [{}]", rendered.join(", ")));
+        }
+        Err(err) => crate::log(&format!("probe failed: {err:?}")),
     }
 }
 
@@ -68,6 +96,18 @@ pub fn install() -> Result<usize, InstallError> {
         waiting_hybrid: resolved.waiting_hybrid_vtable,
     };
     *DISCOVERY.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(Discovery::new(vtables));
+
+    if let (Some(load), Some(call)) = (resolved.luau_load, resolved.call_dispatch) {
+        *PRIMITIVES.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(crate::vm::exec::Primitives {
+                load,
+                call,
+                new_thread: resolved.lua_newthread,
+                security_context_current: resolved.security_context_current,
+            });
+    } else {
+        crate::log("hook: luau primitives unavailable, execution disabled");
+    }
 
     ORIGINAL_STEP.store(resolved.step, Ordering::Release);
 

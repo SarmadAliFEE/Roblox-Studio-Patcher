@@ -26,6 +26,7 @@ pub struct Resolved {
     pub call_dispatch: Option<usize>,
     pub task_defer: Option<usize>,
     pub lua_newthread: Option<usize>,
+    pub security_context_current: Option<usize>,
     pub data_model_vtable: Option<usize>,
     pub script_context_vtable: Option<usize>,
     pub waiting_hybrid_vtable: Option<usize>,
@@ -59,6 +60,19 @@ fn find_optional(name: &'static str, spec: &str, text: &[Segment]) -> Option<usi
     }
 }
 
+fn find_security_context_current(text: &[Segment]) -> Option<usize> {
+    let checker = match find_unique("can_access_restricted", sig::CAN_ACCESS_RESTRICTED, text) {
+        Ok(addr) => addr,
+        Err(err) => {
+            crate::log(&format!("resolve: canAccessRestricted unavailable ({err:?})"));
+            return None;
+        }
+    };
+    let call_site = checker + sig::CAN_ACCESS_RESTRICTED_BL;
+    let instruction: u32 = crate::mem::read(call_site).ok()?;
+    crate::scan::decode_arm64_bl(instruction, call_site)
+}
+
 pub fn resolve() -> Result<Resolved, ResolveError> {
     let image = platform::find_main_image().ok_or(ResolveError::NoImage)?;
     let text = image.text_segments();
@@ -84,6 +98,7 @@ pub fn resolve() -> Result<Resolved, ResolveError> {
         call_dispatch: find_optional("call_dispatch", sig::CALL_DISPATCH, &text),
         task_defer: find_optional("task_defer", sig::TASK_DEFER, &text),
         lua_newthread: find_optional("lua_newthread", sig::LUA_NEWTHREAD, &text),
+        security_context_current: find_security_context_current(&text),
         data_model_vtable,
         script_context_vtable,
         waiting_hybrid_vtable,

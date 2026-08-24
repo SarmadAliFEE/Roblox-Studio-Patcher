@@ -1,3 +1,4 @@
+pub mod exec;
 pub mod luau;
 pub mod hook;
 pub mod discovery;

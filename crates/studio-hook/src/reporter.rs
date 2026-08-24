@@ -1,5 +1,5 @@
-use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
@@ -8,11 +8,13 @@ const CONFIG_PATH: &str = "/Users/Shared/rbx-theme-set/Logger.json";
 const CONFIG_PATH: &str = r"C:\Users\Public\rbxthemeset\Logger.json";
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
-const MIN_POST_INTERVAL: Duration = Duration::from_millis(1500);
-const MAX_BATCH: usize = 20;
-const MAX_CONTENT: usize = 1900;
+const MIN_POST_INTERVAL: Duration = Duration::from_millis(2000);
+const MAX_LOG: usize = 512 * 1024;
+const BOUNDARY: &str = "----studiohooklog7f3a2b";
 
-static SENDER: OnceLock<Sender<String>> = OnceLock::new();
+static SENDER: OnceLock<Sender<()>> = OnceLock::new();
+static LOG: Mutex<String> = Mutex::new(String::new());
+static MESSAGE_ID: Mutex<Option<String>> = Mutex::new(None);
 
 pub fn init() {
     let Some((enabled, webhook)) = load_config() else { return };
@@ -20,7 +22,7 @@ pub fn init() {
         return;
     }
 
-    let (tx, rx) = mpsc::channel::<String>();
+    let (tx, rx) = mpsc::channel::<()>();
     if SENDER.set(tx).is_err() {
         return;
     }
@@ -29,14 +31,44 @@ pub fn init() {
 
     install_panic_hook();
     crash::install(webhook);
-    report(&format!("logger online (pid {})", std::process::id()));
+    report(&format!("logger online - pid {} - {}", std::process::id(), os_line()));
 }
 
-/// Forwards a line to the webhook if logging is enabled
+/// Appends a line to the accumulated log; the whole thing is uploaded as one
+/// `.log` file (edited in place) when logging is enabled.
 pub fn report(message: &str) {
-    if let Some(tx) = SENDER.get() {
-        let _ = tx.send(message.to_owned());
+    {
+        let mut log = LOG.lock().unwrap_or_else(|p| p.into_inner());
+        log.push_str(message);
+        log.push('\n');
+        if log.len() > MAX_LOG {
+            let mut cut = log.len() - MAX_LOG;
+            while cut < log.len() && !log.is_char_boundary(cut) {
+                cut += 1;
+            }
+            log.drain(..cut);
+        }
     }
+    if let Some(tx) = SENDER.get() {
+        let _ = tx.send(());
+    }
+}
+
+fn os_line() -> String {
+    let arch = std::env::consts::ARCH;
+    #[cfg(target_os = "macos")]
+    {
+        let mut os = std::env::consts::OS.to_string();
+        if let Ok(out) = std::process::Command::new("sw_vers").arg("-productVersion").output() {
+            if out.status.success() {
+                os.push(' ');
+                os.push_str(String::from_utf8_lossy(&out.stdout).trim());
+            }
+        }
+        return format!("{os} ({arch})");
+    }
+    #[cfg(not(target_os = "macos"))]
+    format!("{} ({arch})", std::env::consts::OS)
 }
 
 fn load_config() -> Option<(bool, String)> {
@@ -55,37 +87,79 @@ fn install_panic_hook() {
     }));
 }
 
-fn pump(rx: Receiver<String>, webhook: String) {
+fn pump(rx: Receiver<()>, webhook: String) {
     let mut last_post = Instant::now() - MIN_POST_INTERVAL;
-    while let Ok(first) = rx.recv() {
-        let mut batch = vec![first];
-        while batch.len() < MAX_BATCH {
-            match rx.recv_timeout(Duration::from_millis(300)) {
-                Ok(line) => batch.push(line),
-                Err(_) => break,
-            }
-        }
+    while rx.recv().is_ok() {
+        while rx.try_recv().is_ok() {}
         let wait = MIN_POST_INTERVAL.saturating_sub(last_post.elapsed());
         if !wait.is_zero() {
             std::thread::sleep(wait);
         }
-        post(&webhook, &batch.join("\n"));
+        while rx.try_recv().is_ok() {}
+        flush(&webhook);
         last_post = Instant::now();
     }
 }
 
-pub(crate) fn post(webhook: &str, content: &str) {
-    let mut content = content;
-    if content.len() > MAX_CONTENT {
-        content = &content[content.len() - MAX_CONTENT..];
+fn flush(webhook: &str) {
+    let content = {
+        let log = LOG.lock().unwrap_or_else(|p| p.into_inner());
+        if log.is_empty() {
+            return;
+        }
+        log.clone()
+    };
+    let existing = MESSAGE_ID.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let updated = match existing {
+        Some(id) => edit_log(webhook, &id, &content).or_else(|| create_log(webhook, &content)),
+        None => create_log(webhook, &content),
+    };
+    if let Some(id) = updated {
+        *MESSAGE_ID.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
     }
-    let body = serde_json::json!({ "content": content }).to_string();
-    let _ = ureq::builder()
+}
+
+fn create_log(webhook: &str, content: &str) -> Option<String> {
+    let response = multipart(&format!("{webhook}?wait=true"), "POST", content, None)?;
+    let json: serde_json::Value = serde_json::from_str(&response).ok()?;
+    json.get("id").and_then(|v| v.as_str()).map(|s| s.to_owned())
+}
+
+fn edit_log(webhook: &str, id: &str, content: &str) -> Option<String> {
+    multipart(&format!("{webhook}/messages/{id}"), "PATCH", content, Some("{\"attachments\":[]}"))?;
+    Some(id.to_owned())
+}
+
+fn multipart(url: &str, method: &str, file: &str, payload_json: Option<&str>) -> Option<String> {
+    let mut body: Vec<u8> = Vec::with_capacity(file.len() + 512);
+    if let Some(payload) = payload_json {
+        body.extend_from_slice(
+            format!(
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"payload_json\"\r\n\
+                 Content-Type: application/json\r\n\r\n{payload}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    body.extend_from_slice(
+        format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"files[0]\"; \
+             filename=\"studio-hook.log\"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(file.as_bytes());
+    body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+
+    ureq::builder()
         .timeout(HTTP_TIMEOUT)
         .build()
-        .post(webhook)
-        .set("Content-Type", "application/json")
-        .send_string(&body);
+        .request(method, url)
+        .set("Content-Type", &format!("multipart/form-data; boundary={BOUNDARY}"))
+        .send_bytes(&body)
+        .ok()?
+        .into_string()
+        .ok()
 }
 
 #[cfg(unix)]

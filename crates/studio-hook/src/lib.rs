@@ -1,3 +1,4 @@
+pub mod discord;
 pub mod mem;
 pub mod platform;
 pub mod scan;

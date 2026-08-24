@@ -152,7 +152,13 @@ pub fn elevate_security_context(current: usize) -> bool {
     cached && lazy
 }
 
+const LUA_THREAD_TAG: u8 = 0x0a;
+
 pub fn run(shared: usize, primitives: &Primitives, source: &str, chunk: &str) -> Result<Vec<Value>, ExecError> {
+    if mem::read::<u8>(shared).unwrap_or(0) != LUA_THREAD_TAG {
+        return Err(ExecError::NoThread);
+    }
+
     let bytecode = luau::compile(source).map_err(ExecError::Compile)?;
 
     let shared_top_before = mem::read::<usize>(shared + crate::vm::L_TOP)
@@ -200,34 +206,34 @@ pub fn run(shared: usize, primitives: &Primitives, source: &str, chunk: &str) ->
     let call: CallFn = unsafe { core::mem::transmute(primitives.call) };
     let status = unsafe { call(lua_state as *mut c_void, 0, 0) };
 
-    let after = mem::read::<usize>(lua_state + crate::vm::L_TOP)
-        .map_err(|_| ExecError::CorruptStack { top: 0, base })?;
+    let top_after = mem::read::<usize>(lua_state + crate::vm::L_TOP)
+        .map_err(|_| ExecError::CorruptStack { top: 0, base: 0 })?;
+    let base_after = mem::read::<usize>(lua_state + crate::vm::L_BASE)
+        .map_err(|_| ExecError::CorruptStack { top: top_after, base: 0 })?;
 
-    if after < base || (after - base) / TVALUE_SIZE > MAX_PLAUSIBLE_RESULTS {
-        return Err(ExecError::CorruptStack { top: after, base });
-    }
-
-    if status != 0 {
-        let error = read_value(after.saturating_sub(TVALUE_SIZE));
-        let _ = mem::write(lua_state + crate::vm::L_TOP, base);
+    let restore = |result| {
         if lua_state != shared {
             let _ = mem::write(shared + crate::vm::L_TOP, shared_top_before);
         }
-        return Err(ExecError::Script(error));
+        result
+    };
+
+    if top_after < base_after || (top_after - base_after) / TVALUE_SIZE > MAX_PLAUSIBLE_RESULTS {
+        return restore(Err(ExecError::CorruptStack { top: top_after, base: base_after }));
+    }
+
+    if status != 0 {
+        let error = read_value(top_after.saturating_sub(TVALUE_SIZE));
+        return restore(Err(ExecError::Script(error)));
     }
 
     let mut values = Vec::new();
-    let mut slot = base;
-    while slot + TVALUE_SIZE <= after && values.len() < MAX_RESULTS {
+    let mut slot = base_after;
+    while slot + TVALUE_SIZE <= top_after && values.len() < MAX_RESULTS {
         values.push(read_value(slot));
         slot += TVALUE_SIZE;
     }
-
-    let _ = mem::write(lua_state + crate::vm::L_TOP, base);
-    if lua_state != shared {
-        let _ = mem::write(shared + crate::vm::L_TOP, shared_top_before);
-    }
-    Ok(values)
+    restore(Ok(values))
 }
 
 #[cfg(test)]

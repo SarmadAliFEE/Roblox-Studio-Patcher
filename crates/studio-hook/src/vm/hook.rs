@@ -3,16 +3,18 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
+use crate::discord::presence::Presence;
 use crate::platform;
-use crate::vm::discovery::{Discovery, Event, Vtables};
+use crate::vm::discovery::{Discovery, Ready, Vtables};
+use crate::vm::exec::Primitives;
 use crate::vm::resolve::{self, ResolveError};
 
 type StepFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void;
 
 static ORIGINAL_STEP: AtomicUsize = AtomicUsize::new(0);
 static DISCOVERY: Mutex<Option<Discovery>> = Mutex::new(None);
-static PRIMITIVES: Mutex<Option<crate::vm::exec::Primitives>> = Mutex::new(None);
-static PROBED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static PRIMITIVES: Mutex<Option<Primitives>> = Mutex::new(None);
+static PRESENCE: Mutex<Option<Presence>> = Mutex::new(None);
 
 #[derive(Debug)]
 pub enum InstallError {
@@ -22,11 +24,7 @@ pub enum InstallError {
 }
 
 unsafe extern "C" fn hooked_step(job: *mut c_void, stats: *mut c_void) -> *mut c_void {
-    crate::guard("step", || {
-        if let Some(ready) = observe(job as usize) {
-            probe(ready);
-        }
-    });
+    crate::guard("step", || observe(job as usize));
 
     let original = ORIGINAL_STEP.load(Ordering::Acquire);
     debug_assert!(original != 0, "hook installed before the original was recorded");
@@ -34,45 +32,44 @@ unsafe extern "C" fn hooked_step(job: *mut c_void, stats: *mut c_void) -> *mut c
     unsafe { original(job, stats) }
 }
 
-fn observe(job: usize) -> Option<crate::vm::discovery::Ready> {
-    let Ok(mut slot) = DISCOVERY.try_lock() else { return None };
-    let Some(discovery) = slot.as_mut() else { return None };
-
-    let event = discovery.on_step(job, Instant::now());
-    if let Event::Live(ready) = event {
-        if std::env::var("STUDIO_HOOK_PROBE").is_ok() && !PROBED.swap(true, Ordering::AcqRel) {
-            return Some(ready);
-        }
-    }
-
-    match event {
-        Event::Became(ready) => crate::log(&format!(
-            "capture ready: job={:#x} datamodel={:#x} scriptcontext={:#x} lua_state={:#x}",
-            ready.job, ready.data_model, ready.script_context, ready.lua_state
-        )),
-        Event::Dropped(why) => crate::log(&format!("capture dropped: {why}")),
-        _ => {}
-    }
-    None
+enum Action {
+    Poll(Ready, bool),
+    Idle,
+    Hold,
 }
 
-fn probe(ready: crate::vm::discovery::Ready) {
-    let Ok(slot) = PRIMITIVES.try_lock() else { return };
-    let Some(primitives) = slot.as_ref() else { return };
-
-    let source = "return 1 + 1";
-    match crate::vm::exec::run(ready.lua_state, primitives, source, "=StudioHookProbe") {
-        Ok(values) => {
-            let rendered: Vec<String> = values.iter().map(|v| v.to_string()).collect();
-            crate::log(&format!("probe ok: [{}]", rendered.join(", ")));
+fn observe(job: usize) {
+    let now = Instant::now();
+    let action = {
+        let Ok(mut slot) = DISCOVERY.try_lock() else { return };
+        let Some(discovery) = slot.as_mut() else { return };
+        discovery.on_step(job, now);
+        match discovery.edit(now) {
+            Some(ready) if ready.job == job => Action::Poll(ready, discovery.play_test_active(now)),
+            Some(_) => Action::Hold,
+            None => Action::Idle,
         }
-        Err(err) => crate::log(&format!("probe failed: {err:?}")),
+    };
+    match action {
+        Action::Poll(ready, play_test) => drive_presence(ready, play_test),
+        Action::Idle => drive_idle(),
+        Action::Hold => {}
     }
 }
 
-pub fn ready() -> Option<crate::vm::discovery::Ready> {
-    let slot = DISCOVERY.try_lock().ok()?;
-    slot.as_ref()?.settled(Instant::now())
+fn drive_presence(ready: Ready, play_test: bool) {
+    let Ok(mut presence_slot) = PRESENCE.try_lock() else { return };
+    let Some(presence) = presence_slot.as_mut() else { return };
+    let Ok(primitives_slot) = PRIMITIVES.try_lock() else { return };
+    let Some(primitives) = primitives_slot.as_ref() else { return };
+    presence.on_tick(ready.lua_state, primitives, play_test);
+}
+
+fn drive_idle() {
+    let Ok(mut presence_slot) = PRESENCE.try_lock() else { return };
+    if let Some(presence) = presence_slot.as_mut() {
+        presence.on_idle();
+    }
 }
 
 pub fn install() -> Result<usize, InstallError> {
@@ -98,13 +95,13 @@ pub fn install() -> Result<usize, InstallError> {
     *DISCOVERY.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(Discovery::new(vtables));
 
     if let (Some(load), Some(call)) = (resolved.luau_load, resolved.call_dispatch) {
-        *PRIMITIVES.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some(crate::vm::exec::Primitives {
-                load,
-                call,
-                new_thread: resolved.lua_newthread,
-                security_context_current: resolved.security_context_current,
-            });
+        *PRIMITIVES.lock().unwrap_or_else(|p| p.into_inner()) = Some(Primitives {
+            load,
+            call,
+            new_thread: resolved.lua_newthread,
+            security_context_current: resolved.security_context_current,
+        });
+        *PRESENCE.lock().unwrap_or_else(|p| p.into_inner()) = crate::discord::start();
     } else {
         crate::log("hook: luau primitives unavailable, execution disabled");
     }

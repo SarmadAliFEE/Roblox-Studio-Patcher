@@ -9,6 +9,7 @@ use crate::mem;
 
 pub const L_STACK_LIMIT: usize = 0x50;
 pub const L_TOP: usize = 0x58;
+pub const L_BASE: usize = 0x38;
 pub const L_GLOBAL: usize = 0x30;
 pub const L_EXTRA_SPACE: usize = 0x78;
 pub const GLOBAL_DEPTH: usize = 0x4980;

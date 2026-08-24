@@ -1,11 +1,13 @@
 use core::time::Duration;
 use std::time::Instant;
 
-use crate::vm::{self, Cursor};
+use crate::vm::{self, Cursor, GAME_STATE_EDIT};
 
-pub const REVALIDATE_EVERY: Duration = Duration::from_millis(5000);
-pub const STALE_AFTER: Duration = Duration::from_millis(1500);
-pub const SETTLE_FOR: Duration = Duration::from_millis(2000);
+pub const STALE_AFTER: Duration = Duration::from_millis(700);
+pub const PLAY_TEST_RECENT: Duration = Duration::from_millis(3000);
+pub const FORGET_AFTER: Duration = Duration::from_millis(8000);
+pub const MAX_TRACKED: usize = 24;
+const DATA_MODEL_FIELDS: usize = 0x40;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Vtables {
@@ -22,206 +24,173 @@ pub struct Ready {
     pub lua_state: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Stage {
-    DataModel { cursor: Cursor },
-    ScriptContext,
-    LuaState { cursor: Cursor },
+struct Tracked {
+    job: usize,
+    data_model: Option<usize>,
+    dm_cursor: Cursor,
+    dm_searched: bool,
+    script_context: Option<usize>,
+    lua_state: Option<usize>,
+    game_state: i32,
+    last_seen: Instant,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Capture {
-    Idle,
-    Searching {
-        job: usize,
-        stage: Stage,
-        data_model: Option<usize>,
-        script_context: Option<usize>,
-    },
-    Ready { ready: Ready, since: Instant },
-}
+impl Tracked {
+    fn new(job: usize, now: Instant) -> Tracked {
+        Tracked {
+            job,
+            data_model: None,
+            dm_cursor: Cursor::default(),
+            dm_searched: false,
+            script_context: None,
+            lua_state: None,
+            game_state: -1,
+            last_seen: now,
+        }
+    }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Event {
-    Idle,
-    Searching,
-    Became(Ready),
-    Live(Ready),
-    Settling,
-    Dropped(&'static str),
+    fn is_edit(&self) -> bool {
+        self.game_state == GAME_STATE_EDIT
+    }
+
+    fn edit_ready(&self) -> Option<Ready> {
+        Some(Ready {
+            job: self.job,
+            data_model: self.data_model?,
+            script_context: self.script_context?,
+            lua_state: self.lua_state?,
+        })
+    }
 }
 
 pub struct Discovery {
     vtables: Vtables,
-    state: Capture,
-    alternate: Option<usize>,
-    last_seen_captured: Option<Instant>,
-    last_revalidate: Option<Instant>,
+    jobs: Vec<Tracked>,
+    live_edit: Option<usize>,
 }
 
 impl Discovery {
     pub fn new(vtables: Vtables) -> Discovery {
-        Discovery {
-            vtables,
-            state: Capture::Idle,
-            alternate: None,
-            last_seen_captured: None,
-            last_revalidate: None,
-        }
+        Discovery { vtables, jobs: Vec::new(), live_edit: None }
     }
 
-    pub fn ready(&self) -> Option<Ready> {
-        match self.state {
-            Capture::Ready { ready, .. } => Some(ready),
-            _ => None,
-        }
+    pub fn on_step(&mut self, job: usize, now: Instant) {
+        let index = self.slot_for(job, now);
+        self.jobs[index].last_seen = now;
+        self.locate_data_model(index, job);
+        self.resolve_lua_state(index, job);
+        self.retire_stale(now);
+        self.announce_edit(now);
     }
 
-    pub fn settled(&self, now: Instant) -> Option<Ready> {
-        match self.state {
-            Capture::Ready { ready, since } if now.duration_since(since) >= SETTLE_FOR => Some(ready),
-            _ => None,
-        }
+    pub fn edit(&self, now: Instant) -> Option<Ready> {
+        self.jobs
+            .iter()
+            .filter(|j| j.is_edit() && now.duration_since(j.last_seen) < STALE_AFTER)
+            .find_map(Tracked::edit_ready)
+            .filter(|ready| self.still_live(ready))
     }
 
-    fn captured_job(&self) -> Option<usize> {
-        match self.state {
-            Capture::Idle => None,
-            Capture::Searching { job, .. } => Some(job),
-            Capture::Ready { ready, .. } => Some(ready.job),
-        }
-    }
-
-    fn drop_capture(&mut self, why: &'static str) -> Event {
-        self.state = Capture::Idle;
-        self.last_seen_captured = None;
-        self.last_revalidate = None;
-        Event::Dropped(why)
-    }
-
-    fn is_hybrid(&self, job: usize) -> bool {
-        match self.vtables.waiting_hybrid {
-            Some(vtable) => vm::object_matches_vtable(job, vtable),
-            None => true,
-        }
-    }
-
-    fn still_valid(&self, ready: &Ready) -> bool {
+    fn still_live(&self, ready: &Ready) -> bool {
         vm::object_matches_vtable(ready.data_model, self.vtables.data_model)
             && vm::object_matches_vtable(ready.script_context, self.vtables.script_context)
+            && vm::is_edit_data_model(ready.data_model)
     }
 
-    pub fn on_step(&mut self, job: usize, now: Instant) -> Event {
-        if self.captured_job() != Some(job) {
-            return self.on_foreign_job(job, now);
-        }
-        self.last_seen_captured = Some(now);
+    pub fn play_test_active(&self, now: Instant) -> bool {
+        self.jobs.iter().any(|j| {
+            vm::is_play_test_state(j.game_state) && now.duration_since(j.last_seen) < PLAY_TEST_RECENT
+        })
+    }
 
-        match self.state {
-            Capture::Idle => Event::Idle,
-            Capture::Searching { .. } => self.advance(now),
-            Capture::Ready { ready, since } => {
-                let due = self
-                    .last_revalidate
-                    .map(|at| now.duration_since(at) >= REVALIDATE_EVERY)
-                    .unwrap_or(true);
-                if due {
-                    self.last_revalidate = Some(now);
-                    if !self.still_valid(&ready) {
-                        return self.drop_capture("captured objects no longer match their vtables");
-                    }
+    fn slot_for(&mut self, job: usize, now: Instant) -> usize {
+        if let Some(index) = self.jobs.iter().position(|j| j.job == job) {
+            return index;
+        }
+        let fresh = Tracked::new(job, now);
+        if self.jobs.len() < MAX_TRACKED {
+            self.jobs.push(fresh);
+            return self.jobs.len() - 1;
+        }
+        let evict = self
+            .jobs
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, j)| j.last_seen)
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        self.jobs[evict] = fresh;
+        evict
+    }
+
+    fn locate_data_model(&mut self, index: usize, job: usize) {
+        if let Some(data_model) = self.jobs[index].data_model {
+            if vm::object_matches_vtable(data_model, self.vtables.data_model) {
+                if let Some(state) = vm::game_state_type(data_model) {
+                    self.jobs[index].game_state = state;
                 }
-                if now.duration_since(since) < SETTLE_FOR {
-                    Event::Settling
-                } else {
-                    Event::Live(ready)
-                }
+            } else {
+                let entry = &mut self.jobs[index];
+                entry.data_model = None;
+                entry.script_context = None;
+                entry.lua_state = None;
+                entry.game_state = -1;
+                entry.dm_searched = false;
+                entry.dm_cursor.reset();
             }
+            return;
+        }
+        if self.jobs[index].dm_searched {
+            return;
+        }
+
+        let vtable = self.vtables.data_model;
+        let found = vm::find_instance_by_vtable(job, DATA_MODEL_FIELDS, vtable, &mut self.jobs[index].dm_cursor);
+        let entry = &mut self.jobs[index];
+        match found {
+            Some(data_model) => {
+                entry.data_model = Some(data_model);
+                entry.game_state = vm::game_state_type(data_model).unwrap_or(-1);
+                entry.dm_searched = true;
+            }
+            None if entry.dm_cursor.exhausted() => entry.dm_searched = true,
+            None => {}
         }
     }
 
-    fn on_foreign_job(&mut self, job: usize, now: Instant) -> Event {
-        self.alternate = Some(job);
-
-        let stale = self
-            .last_seen_captured
-            .map(|at| now.duration_since(at) > STALE_AFTER)
-            .unwrap_or(false);
-
-        match self.state {
-            Capture::Idle => {
-                self.state = Capture::Searching {
-                    job,
-                    stage: Stage::DataModel { cursor: Cursor::default() },
-                    data_model: None,
-                    script_context: None,
-                };
-                self.last_seen_captured = Some(now);
-                Event::Searching
-            }
-            _ if stale => self.drop_capture("captured job stopped stepping"),
-            _ => Event::Idle,
+    fn resolve_lua_state(&mut self, index: usize, job: usize) {
+        let entry = &self.jobs[index];
+        if !entry.is_edit() || entry.data_model.is_none() || entry.lua_state.is_some() {
+            return;
         }
-    }
-
-    fn advance(&mut self, now: Instant) -> Event {
-        let Capture::Searching { job, mut stage, mut data_model, mut script_context } = self.state else {
-            return Event::Idle;
-        };
-
-        match stage {
-            Stage::DataModel { mut cursor } => {
-                match vm::find_instance_by_vtable(job, 0x40, self.vtables.data_model, &mut cursor) {
-                    Some(found) => {
-                        data_model = Some(found);
-                        stage = Stage::ScriptContext;
-                    }
-                    None => stage = Stage::DataModel { cursor },
-                }
-            }
-            Stage::ScriptContext => {
-                if !self.is_hybrid(job) {
-                    return self.drop_capture("job is not a script-hosting job");
-                }
-                match self.find_script_context(job) {
-                    Some(found) => {
-                        script_context = Some(found);
-                        stage = Stage::LuaState { cursor: Cursor::default() };
-                    }
-                    None => return self.drop_capture("no ScriptContext reachable from job"),
-                }
-            }
-            Stage::LuaState { mut cursor } => {
-                let Some(context) = script_context else {
-                    return self.drop_capture("lost ScriptContext mid-search");
-                };
-                let found = vm::authoritative_lua_state(context)
-                    .or_else(|| vm::find_lua_state_near(context, 0x100, &mut cursor));
-                match found {
-                    Some(lua_state) => {
-                        let Some(data_model) = data_model else {
-                            return self.drop_capture("lost DataModel mid-search");
-                        };
-                        let ready = Ready { job, data_model, script_context: context, lua_state };
-                        self.state = Capture::Ready { ready, since: now };
-                        self.last_revalidate = Some(now);
-                        return Event::Became(ready);
-                    }
-                    None => stage = Stage::LuaState { cursor },
-                }
-            }
-        }
-
-        self.state = Capture::Searching { job, stage, data_model, script_context };
-        Event::Searching
+        let Some(context) = self.find_script_context(job) else { return };
+        let lua_state = vm::authoritative_lua_state(context)
+            .or_else(|| vm::find_lua_state_near(context, 0x100, &mut Cursor::default()));
+        let entry = &mut self.jobs[index];
+        entry.script_context = Some(context);
+        entry.lua_state = lua_state;
     }
 
     fn find_script_context(&self, job: usize) -> Option<usize> {
         (0..0x80).find_map(|index| {
-            let addr = job + index * 8;
-            let value = crate::mem::read_ptr(addr).ok()?;
+            let value = crate::mem::read_ptr(job + index * 8).ok()?;
             vm::object_matches_vtable(value, self.vtables.script_context).then_some(value)
         })
+    }
+
+    fn retire_stale(&mut self, now: Instant) {
+        self.jobs.retain(|j| now.duration_since(j.last_seen) < FORGET_AFTER);
+    }
+
+    fn announce_edit(&mut self, now: Instant) {
+        let current = self.edit(now).map(|ready| ready.lua_state);
+        if current != self.live_edit {
+            match current {
+                Some(lua_state) => crate::log(&format!("capture ready: edit lua_state={lua_state:#x}")),
+                None => crate::log("capture dropped: no edit datamodel"),
+            }
+            self.live_edit = current;
+        }
     }
 }
 
@@ -229,108 +198,85 @@ impl Discovery {
 mod tests {
     use super::*;
 
-    struct Arena {
-        words: Vec<u64>,
-    }
-
-    impl Arena {
-        fn new(words: usize) -> Arena {
-            Arena { words: vec![0u64; words] }
-        }
-        fn addr(&self, word: usize) -> usize {
-            &self.words[word] as *const u64 as usize
-        }
-        fn put(&mut self, word: usize, value: usize) {
-            self.words[word] = value as u64;
-        }
-    }
-
     fn vtables() -> Vtables {
         Vtables { data_model: 0xdd00_0000, script_context: 0xcc00_0000, waiting_hybrid: None }
     }
 
+    fn edit(lua_state: usize, last_seen: Instant) -> Tracked {
+        Tracked {
+            data_model: Some(0x1000),
+            script_context: Some(0x2000),
+            lua_state: Some(lua_state),
+            game_state: GAME_STATE_EDIT,
+            ..Tracked::new(1, last_seen)
+        }
+    }
+
     #[test]
-    fn first_job_seen_starts_a_search() {
-        let mut discovery = Discovery::new(vtables());
+    fn a_fresh_discovery_reports_nothing() {
+        let discovery = Discovery::new(vtables());
+        assert!(discovery.edit(Instant::now()).is_none());
+        assert!(!discovery.play_test_active(Instant::now()));
+    }
+
+    #[test]
+    fn a_recent_edit_job_is_reported_as_the_capture() {
         let now = Instant::now();
-        assert_eq!(discovery.on_step(0x1234, now), Event::Searching);
-        assert!(discovery.ready().is_none());
+        // back the objects with memory so the live revalidation in edit() passes
+        let mut dm = vec![0u64; 0x100];
+        dm[0] = vtables().data_model as u64;
+        let mut sc = vec![0u64; 4];
+        sc[0] = vtables().script_context as u64;
+
+        let mut discovery = Discovery::new(vtables());
+        discovery.jobs.push(Tracked {
+            data_model: Some(dm.as_ptr() as usize),
+            script_context: Some(sc.as_ptr() as usize),
+            lua_state: Some(0xabc),
+            game_state: GAME_STATE_EDIT,
+            ..Tracked::new(1, now)
+        });
+        assert_eq!(discovery.edit(now).map(|r| r.lua_state), Some(0xabc));
     }
 
     #[test]
-    fn a_ready_capture_always_carries_every_pointer() {
-        let mut arena = Arena::new(64);
-        arena.put(0, vtables().data_model);
-        let data_model = arena.addr(0);
-        arena.put(8, vtables().script_context);
-        let script_context = arena.addr(8);
-
-        let ready = Ready { job: 1, data_model, script_context, lua_state: 2 };
-        let discovery = Discovery {
-            vtables: vtables(),
-            state: Capture::Ready { ready, since: Instant::now() },
-            alternate: None,
-            last_seen_captured: None,
-            last_revalidate: None,
-        };
-        let got = discovery.ready().expect("ready");
-        assert_eq!(got.data_model, data_model);
-        assert_eq!(got.script_context, script_context);
-        assert_eq!(got.lua_state, 2);
-    }
-
-    #[test]
-    fn capture_is_dropped_when_its_objects_stop_matching() {
-        let mut arena = Arena::new(64);
-        arena.put(0, 0xbad0_0000);
-        let data_model = arena.addr(0);
-        arena.put(8, 0xbad0_0000);
-        let script_context = arena.addr(8);
-
-        let ready = Ready { job: 0x99, data_model, script_context, lua_state: 3 };
+    fn a_stale_edit_job_is_no_longer_the_capture() {
         let start = Instant::now();
-        let mut discovery = Discovery {
-            vtables: vtables(),
-            state: Capture::Ready { ready, since: start },
-            alternate: None,
-            last_seen_captured: Some(start),
-            last_revalidate: None,
-        };
-
-        let event = discovery.on_step(0x99, start + REVALIDATE_EVERY);
-        assert!(matches!(event, Event::Dropped(_)));
-        assert!(discovery.ready().is_none());
+        let mut discovery = Discovery::new(vtables());
+        discovery.jobs.push(edit(0xabc, start));
+        assert!(discovery.edit(start + STALE_AFTER + Duration::from_millis(1)).is_none());
     }
 
     #[test]
-    fn a_ready_capture_is_not_reported_live_until_it_settles() {
-        let ready = Ready { job: 7, data_model: 1, script_context: 2, lua_state: 3 };
-        let start = Instant::now();
-        let discovery = Discovery {
-            vtables: vtables(),
-            state: Capture::Ready { ready, since: start },
-            alternate: None,
-            last_seen_captured: Some(start),
-            last_revalidate: Some(start),
-        };
-        assert!(discovery.settled(start).is_none());
-        assert_eq!(discovery.settled(start + SETTLE_FOR), Some(ready));
+    fn an_edit_job_without_a_lua_state_is_not_ready() {
+        let now = Instant::now();
+        let mut discovery = Discovery::new(vtables());
+        let mut pending = edit(0, now);
+        pending.lua_state = None;
+        discovery.jobs.push(pending);
+        assert!(discovery.edit(now).is_none());
     }
 
     #[test]
-    fn a_silent_captured_job_is_dropped_when_another_job_steps() {
-        let ready = Ready { job: 0x11, data_model: 1, script_context: 2, lua_state: 3 };
-        let start = Instant::now();
-        let mut discovery = Discovery {
-            vtables: vtables(),
-            state: Capture::Ready { ready, since: start },
-            alternate: None,
-            last_seen_captured: Some(start),
-            last_revalidate: Some(start),
-        };
+    fn a_recent_play_datamodel_marks_play_test_active() {
+        let now = Instant::now();
+        let mut discovery = Discovery::new(vtables());
+        discovery.jobs.push(Tracked {
+            data_model: Some(0x3000),
+            game_state: 1,
+            ..Tracked::new(2, now)
+        });
+        assert!(discovery.play_test_active(now));
+        assert!(!discovery.play_test_active(now + PLAY_TEST_RECENT + Duration::from_millis(1)));
+    }
 
-        assert_eq!(discovery.on_step(0x22, start + Duration::from_millis(100)), Event::Idle);
-        let event = discovery.on_step(0x22, start + STALE_AFTER + Duration::from_millis(1));
-        assert!(matches!(event, Event::Dropped(_)));
+    #[test]
+    fn eviction_keeps_the_table_bounded() {
+        let now = Instant::now();
+        let mut discovery = Discovery::new(vtables());
+        for i in 0..MAX_TRACKED + 8 {
+            discovery.slot_for(0x100 + i, now + Duration::from_millis(i as u64));
+        }
+        assert!(discovery.jobs.len() <= MAX_TRACKED);
     }
 }

@@ -1,75 +1,71 @@
 # Roblox-Studio-Patcher
 
-![platform](https://img.shields.io/badge/platform-macOS%20%7C%20windows-blue) ![rust](https://img.shields.io/badge/rust-orange)
+![platform](https://img.shields.io/badge/platform-macOS%20%7C%20windows-blue) ![built in rust](https://img.shields.io/badge/built%20in-rust-orange) ![deps none](https://img.shields.io/badge/runtime%20deps-none-brightgreen)
 
-Patches Roblox Studio so `HasInternalPermission` always returns true. mac + windows.
+flips Studio's `HasInternalPermission` to always-true, plus a handful of optional native hooks. one binary, no install, nothing to compile. mac (arm64) + windows.
 
-## What this actually does
+## what it does
 
-Studio has a hidden internal mode normally reserved for Roblox employees and their "Soothsayer" testers - it unlocks debug tools, experimental features, and internal-only APIs/menus regular developers don't get. `HasInternalPermission` is the check that gates it; this patches it open for everyone.
+Studio has a hidden internal mode normally reserved for Roblox employees and their "Soothsayer" testers - debug tools, experimental features, internal-only APIs and menus you don't normally get. `HasInternalPermission` is the check that gates it; this patches it open.
 
-Related: the command bar's script identity system has an `ElevatedStudioPlugin` identity level alongside the normal ones (`CommandBar`, etc.) - same general concept of elevated/internal access, just a separate mechanism from the permission check this tool patches.
+(related but separate: the command bar has an `ElevatedStudioPlugin` script identity next to the usual `CommandBar` one - same idea of elevated access, different mechanism, not what this touches.)
 
-## Usage
+on top of the permission patch, opt into any of:
 
-Grab the build for your OS from [releases](https://github.com/uwufuzzywiiiaisddd/Roblox-Studio-Patcher/releases).
+- **custom themes** - edit Studio's qt theme jsons live off disk
+- **plugin palette** - recolor the Explorer / ribbon / find-replace plugins, colors baked into their bytecode
+- **script editor background** - a custom image behind your code
+- **window transparency** - hotkeys to fade the whole window
+- **discord rich presence** - the place, script, and line you're editing *(mac for now)*
+- **webhook logging** - mirror every error and crash to a discord webhook
 
-**mac (arm64):**
+## usage
+
+grab your build from [releases](https://github.com/uwufuzzywiiiaisddd/Roblox-Studio-Patcher/releases).
+
+**mac (arm64)**
 
 ```bash
 chmod +x Roblox-Studio-Patcher-mac-silicon
-./Roblox-Studio-Patcher-mac-silicon                          # patches /Applications/RobloxStudio.app
+./Roblox-Studio-Patcher-mac-silicon                                    # patches /Applications/RobloxStudio.app
 ./Roblox-Studio-Patcher-mac-silicon --binary /path/to/RobloxStudio.app # or a custom path
 ```
 
-**windows:**
+**windows**
 
 ```cmd
 Roblox-Studio-Patcher-windows.exe
 ```
 
-just run it, no install needed. finds your Studio install under `%LOCALAPPDATA%\Roblox\Versions` on its own, or pass `--binary path\to\RobloxStudioBeta.exe`.
+finds Studio under `%LOCALAPPDATA%\Roblox\Versions` on its own, or pass `--binary path\to\RobloxStudioBeta.exe`.
 
-A backup of the original binary is made before every patch (next to the original, `.bak-<timestamp>` on mac / same idea on windows).
+just run it - a plain run walks through each option below and asks yes/no. backs up the original binary first (`.bak-<timestamp>` next to it), and checks for a newer release before starting (`--update` to only do that, say no to keep what you've got).
 
-Checks for a newer release on every plain run and asks before installing (`--update` to just do that and nothing else). Says no, keeps going with what you've got.
+## the extras
 
-## Custom themes
+all opt-in - the default run asks, or reach for the flag.
 
-The default run asks if you want this too, or just run it standalone with `--themes`.
+**themes** (`--themes`) redirects Studio's theme jsons onto disk (`/Users/Shared/rbx-theme-set/` on mac, `C:\Users\Public\rbxthemeset` on windows) so you can edit and relaunch. drops the stock jsons there on first run. edit `FoundationDarkTheme.json` / `FoundationLightTheme.json`, whichever one Studio's actually using, then relaunch.
 
-redirects studio's theme jsons to a folder on disk instead of loading them baked into the binary (`/Users/Shared/rbx-theme-set/` on mac, `C:\Users\Public\rbxthemeset` on windows), so you can just edit em and relaunch. grabs the stock jsons for you on first run so you've got something to start from.
+**plugin colors** (`--rbxm-palette`) the Explorer, ribbon, and find/replace plugins are Roact with colors baked into their compiled bytecode - the theme jsons don't reach them. this patches them from a `RbxmPalette` block in the same json and splices straight into the `.rbxm`. baked at patch time, so rerun after edits, or leave `--watch` running and it reapplies on save. still needs a full quit and reopen after.
 
-edit `FoundationDarkTheme.json` and `FoundationLightTheme.json` in that folder, whichever one studio's actually using, then just relaunch studio to see it
+**native hooks** one small rust payload injected through the binary's import table (doesn't touch running memory). the studio-hook cdylib is embedded in the exe, so there's nothing to build and no dll to ship. configs live in the theme-set folder above:
 
-## Special plugin colors
+- script editor background - `EditorBackground.json`, blank `image` = off
+- window transparency - `WindowTransparency.json`, ctrl+=/ctrl+- on mac, alt+=/alt+- on windows
+- discord presence (`--discord`, mac for now) - place name, active script, cursor line, testing status, a thumbnail
+- webhook logging (`--webhook-logging`) - forwards every log line, panic, and native crash to a discord webhook. crash reports are sent from a separate helper process, so they still go out even if the heap is corrupted. `Logger.json`
 
-Explorer, ribbon, and find/replace all are Roact plugins, colors baked into their compiled bytecode - the theme jsons above don't touch them.
+`--inject path/to/thing.dylib` / `.dll` loads your own hook instead.
 
-`--rbxm-palette` patches those from a `RbxmPalette` block in the same json (auto-added with defaults). recompiles and splices straight into the `.rbxm`.
-
-these are baked in at patch time, not read live, so editing the json means running `--rbxm-palette` again. `--watch` does that for you - leave it running, save the json, it reapplies. either way still needs a full quit and reopen of studio after, same as the qt colors.
-
-## Native hooks
-
-one small rust payload loaded into Studio at launch - patches the binary's import table, doesn't touch running memory. the default run asks about each, or `--inject path/to/thing.dylib` / `.dll` for your own.
-
-all mac + windows unless noted. config jsons live in the theme-set folder above.
-
-- **script editor background** - a custom image behind the code. `EditorBackground.json`, blank `image` = off.
-- **window transparency** - hotkeys to fade studio's whole window. `WindowTransparency.json`, ctrl+=/ctrl+- on mac, alt+=/alt+- on windows.
-- **discord rich presence** *(mac for now)* - shows the place, script, and cursor line you're on, testing status, a thumbnail. `--discord`.
-- **webhook logging** - `--webhook-logging` mirrors every error and crash to a discord webhook. `Logger.json`.
-
-## Building from source
+## building
 
 ```bash
 cargo build --release
-./target/release/studio-patcher
 ```
 
-for a windows build from mac/linux you need the target + mingw (`rustup target add x86_64-pc-windows-gnu`, `brew install mingw-w64`), then `cargo build --release --target x86_64-pc-windows-gnu`. the repo's `.cargo/config.toml` routes that build through `scripts/mingw-link-wrapper.sh` so the bundled Luau compiler links statically - without it the exe would need `libstdc++-6.dll` next to it to run.
+windows from mac/linux needs the target + mingw (`rustup target add x86_64-pc-windows-gnu`, `brew install mingw-w64`), then `cargo build --release --target x86_64-pc-windows-gnu`. `.cargo/config.toml` routes that through `scripts/mingw-link-wrapper.sh` to statically link the bundled Luau compiler - without it the exe would want `libstdc++-6.dll` next to it to run.
 
-## Issues
+## issues
 
-DM [uwufuzzywiiiaisdd](https://discord.com/users/1382448091445203037) on Discord for any issues.
+DM [uwufuzzywiiiaisdd](https://discord.com/users/1382448091445203037) on discord.

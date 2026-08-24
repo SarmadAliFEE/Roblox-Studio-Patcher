@@ -1,21 +1,7 @@
-//! Studio hook payload: injected into Roblox Studio and run inside its
-//! process.
-//!
-//! Nothing here may unwind into the host. Every entry point the host can
-//! reach - the load-time constructor and, later, the hooked vtable slots -
-//! goes through `guard`, so a panic fails that one operation and leaves
-//! Studio running.
-
 pub mod mem;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-/// Runs `body`, swallowing a panic instead of letting it cross the FFI
-/// boundary into Studio. Returns `None` if `body` panicked.
-///
-/// Unwinding out of an `extern "C"` frame is undefined behaviour, and this
-/// crate is loaded into a process that must survive our mistakes, so this
-/// wraps every host-reachable entry point.
 pub(crate) fn guard<T>(what: &str, body: impl FnOnce() -> T) -> Option<T> {
     match catch_unwind(AssertUnwindSafe(body)) {
         Ok(value) => Some(value),
@@ -26,11 +12,6 @@ pub(crate) fn guard<T>(what: &str, body: impl FnOnce() -> T) -> Option<T> {
     }
 }
 
-/// Appends a line to the hook's log file.
-///
-/// Deliberately does its own open/append/close per line rather than
-/// holding a handle: this is called from several of Studio's own threads,
-/// and a log that survives a hard kill is worth more than a fast one.
 pub(crate) fn log(message: &str) {
     use std::io::Write;
     let path = if cfg!(target_os = "windows") {
@@ -45,10 +26,6 @@ pub(crate) fn log(message: &str) {
 
 fn on_loaded() {
     log("studio-hook loaded");
-
-    // Proves the memory layer is live and, more importantly, that an
-    // unmapped address comes back as an error rather than taking Studio
-    // down - the property the whole design rests on.
     let probe: mem::MemResult<u64> = mem::read(0x0000_7ffe_dead_0000);
     log(&format!("mem layer: unmapped probe -> {probe:?}"));
 }

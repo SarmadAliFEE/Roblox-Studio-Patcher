@@ -882,7 +882,6 @@ static bool revalidateCapturedState(void) {
     if (!gCapturedDataModel || !gCapturedScriptContext || !gCapturedLuaState) return false;
     if (gDataModelVtable && !objectMatchesVtable(gCapturedDataModel, gDataModelVtable)) return false;
     if (gScriptContextVtable && !objectMatchesVtable(gCapturedScriptContext, gScriptContextVtable)) return false;
-    if (!looksLikeLuaState(gCapturedLuaState, gCapturedScriptContext)) return false;
     return true;
 }
 

@@ -30,11 +30,6 @@ static void logmsg(const char *fmt, ...) {
 
 #pragma mark - Wire protocol (opcodes, framing, JSON)
 
-// Discord's local IPC protocol: an 8-byte header (uint32 LE opcode,
-// uint32 LE payload length) followed by that many bytes of UTF-8 JSON.
-// HANDSHAKE=0 is sent once with {v, client_id}; FRAME=1 carries every
-// subsequent request (SET_ACTIVITY here) as a small JSON-RPC-shaped
-// payload. Nothing beyond these two opcodes is needed for Rich Presence.
 enum { OP_HANDSHAKE = 0, OP_FRAME = 1 };
 
 static bool writeAll(int fd, const void *data, size_t n) {
@@ -104,10 +99,6 @@ static std::string jsonEscape(const std::string &s) {
 
 #pragma mark - Connection
 
-// Discord listens on a Unix socket named discord-ipc-{0..9} (0 for the
-// primary client, higher numbers for Canary/PTB/multiple accounts) inside
-// whichever of these directories it picked at startup - checked in the
-// same order Discord's own clients document.
 static bool tryConnectOnce(int *outFd) {
     const char *candidateDirs[3] = {getenv("XDG_RUNTIME_DIR"), getenv("TMPDIR"), "/tmp"};
     for (const char *dir : candidateDirs) {

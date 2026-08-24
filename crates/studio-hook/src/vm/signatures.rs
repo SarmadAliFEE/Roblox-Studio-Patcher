@@ -62,14 +62,32 @@ mod arch {
 
 pub use arch::*;
 
+#[cfg(target_os = "macos")]
 pub const DATA_MODEL_RTTI: &str = "N3RBX9DataModelE";
+#[cfg(target_os = "macos")]
 pub const SCRIPT_CONTEXT_RTTI: &str = "N3RBX13ScriptContextE";
+#[cfg(target_os = "macos")]
 pub const WAITING_HYBRID_RTTI: &str = "N3RBX19ScriptContextFacets23WaitingHybridScriptsJobE";
-
+#[cfg(target_os = "macos")]
 pub const JOB_CLASSES: &[&str] = &[
     "N3RBX12DataModelJobE",
     "N3RBX19GenericDataModelJobE",
     "N3RBX13TaskScheduler3JobE",
     "N3RBX9DataModel10GenericJobE",
+    WAITING_HYBRID_RTTI,
+];
+
+#[cfg(target_os = "windows")]
+pub const DATA_MODEL_RTTI: &str = ".?AVDataModel@RBX@@";
+#[cfg(target_os = "windows")]
+pub const SCRIPT_CONTEXT_RTTI: &str = ".?AVScriptContext@RBX@@";
+#[cfg(target_os = "windows")]
+pub const WAITING_HYBRID_RTTI: &str = ".?AVWaitingHybridScriptsJob@ScriptContextFacets@RBX@@";
+#[cfg(target_os = "windows")]
+pub const JOB_CLASSES: &[&str] = &[
+    ".?AVDataModelJob@RBX@@",
+    ".?AVGenericDataModelJob@RBX@@",
+    ".?AVJob@TaskScheduler@RBX@@",
+    ".?AVGenericJob@DataModel@RBX@@",
     WAITING_HYBRID_RTTI,
 ];

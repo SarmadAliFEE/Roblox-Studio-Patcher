@@ -74,6 +74,10 @@ pub struct Args {
     /// Skip re-signing after patching (mac only).
     #[arg(long)]
     no_resign: bool,
+
+    /// Skip force-killing running studio processes before patching.
+    #[arg(long)]
+    no_kill_studio: bool,
 }
 
 /// Prompts `q [y/N]` on stdout and reads a yes/no answer from stdin.
@@ -158,6 +162,7 @@ fn main() -> Result<()> {
         did_something = true;
     }
     if let Some(dylib_path) = &args.inject {
+        binary::kill_running_studio(&macho_path, &args)?;
         if !args.no_backup {
             binary::backup(&macho_path)?;
         }

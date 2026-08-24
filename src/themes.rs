@@ -4,7 +4,7 @@ use std::process::Command;
 
 use anyhow::{bail, Result};
 
-use crate::binary::{backup, find_matches, is_pe, resign, PatByte};
+use crate::binary::{backup, find_matches, is_pe, kill_running_studio, resign, PatByte};
 use crate::palette::ensure_palette_defaults;
 use crate::Args;
 
@@ -141,6 +141,7 @@ pub fn run_themes(macho_path: &Path, args: &Args) -> Result<()> {
         println!("dry run");
         return Ok(());
     }
+    kill_running_studio(macho_path, args)?;
     if !args.no_backup {
         backup(macho_path)?;
     }

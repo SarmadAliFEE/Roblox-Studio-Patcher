@@ -145,6 +145,140 @@ pub fn resign(macho_path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+const STUDIO_PROCESS_NAMES: &[&str] = &["RobloxStudioBeta.exe", "RobloxCrashHandler.exe", "StudioMCP.exe"];
+#[cfg(not(target_os = "windows"))]
+const STUDIO_PROCESS_NAMES: &[&str] = &["RobloxStudio", "RobloxCrashHandler", "StudioMCP"];
+
+struct StudioProcess {
+    pid: u32,
+    path: PathBuf,
+}
+
+#[cfg(not(target_os = "windows"))]
+fn studio_root(hint_path: &Path) -> Option<PathBuf> {
+    app_root(hint_path)
+}
+
+#[cfg(target_os = "windows")]
+fn studio_root(hint_path: &Path) -> Option<PathBuf> {
+    hint_path
+        .ancestors()
+        .find(|p: &&Path| {
+            p.file_name()
+                .and_then(|n: &std::ffi::OsStr| n.to_str())
+                .is_some_and(|n: &str| n.eq_ignore_ascii_case("Versions"))
+        })
+        .map(Into::into)
+        .or_else(|| hint_path.parent().map(Into::into))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn find_studio_processes(root: Option<&Path>) -> Result<Vec<StudioProcess>> {
+    let out: std::process::Output = Command::new("ps").args(["-Ao", "pid=,comm="]).output()?;
+    let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stdout);
+    let mut found: Vec<StudioProcess> = vec![];
+    for line in text.lines() {
+        let trimmed: &str = line.trim();
+        let Some(sp) = trimmed.find(char::is_whitespace) else {
+            continue;
+        };
+        let (pid_str, rest): (&str, &str) = trimmed.split_at(sp);
+        let Ok(pid) = pid_str.parse::<u32>() else {
+            continue;
+        };
+        let path: PathBuf = PathBuf::from(rest.trim());
+        let name: &str = path.file_name().and_then(|n: &std::ffi::OsStr| n.to_str()).unwrap_or("");
+        let matched: bool = match root {
+            Some(r) => path.starts_with(r),
+            None => STUDIO_PROCESS_NAMES.contains(&name),
+        };
+        if matched {
+            found.push(StudioProcess { pid, path });
+        }
+    }
+    Ok(found)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn kill_pid(pid: u32) {
+    let ok: bool = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()
+        .map(|s: std::process::ExitStatus| s.success())
+        .unwrap_or(false);
+    if !ok {
+        println!("warning: couldn't kill pid {pid} (may have already exited)");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn find_studio_processes(root: Option<&Path>) -> Result<Vec<StudioProcess>> {
+    let out: std::process::Output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-Process | Where-Object { $_.Path } | ForEach-Object { '{0}`t{1}' -f $_.Id, $_.Path }",
+        ])
+        .output()?;
+    let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stdout);
+    let mut found: Vec<StudioProcess> = vec![];
+    for line in text.lines() {
+        let Some((pid_str, path_str)) = line.trim().split_once('\t') else {
+            continue;
+        };
+        let Ok(pid) = pid_str.trim().parse::<u32>() else {
+            continue;
+        };
+        let path: PathBuf = PathBuf::from(path_str.trim());
+        let name: &str = path.file_name().and_then(|n: &std::ffi::OsStr| n.to_str()).unwrap_or("");
+        let matched: bool = match root {
+            Some(r) => path.starts_with(r),
+            None => STUDIO_PROCESS_NAMES.iter().any(|n: &&str| n.eq_ignore_ascii_case(name)),
+        };
+        if matched {
+            found.push(StudioProcess { pid, path });
+        }
+    }
+    Ok(found)
+}
+
+#[cfg(target_os = "windows")]
+fn kill_pid(pid: u32) {
+    let ok: bool = Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .status()
+        .map(|s: std::process::ExitStatus| s.success())
+        .unwrap_or(false);
+    if !ok {
+        println!("warning: couldn't kill pid {pid} (may have already exited)");
+    }
+}
+
+pub fn kill_running_studio(hint_path: &Path, args: &Args) -> Result<()> {
+    if args.dry_run || args.no_kill_studio {
+        return Ok(());
+    }
+    let root: Option<PathBuf> = studio_root(hint_path);
+    let running: Vec<StudioProcess> = find_studio_processes(root.as_deref())?;
+    if running.is_empty() {
+        return Ok(());
+    }
+    println!("roblox studio is running and needs to close before patching:");
+    for p in &running {
+        println!("  [{}] {}", p.pid, p.path.display());
+    }
+    if !crate::ask_yn("kill these processes now? (unsaved work in studio will be lost)") {
+        bail!("studio is running - close it yourself, or pass --no-kill-studio, then try again");
+    }
+    for p in &running {
+        kill_pid(p.pid);
+    }
+    println!("killed {} studio process(es)", running.len());
+    Ok(())
+}
+
 pub fn is_pe(data: &[u8]) -> bool {
     data.len() > 0x40 && data[0..2] == *b"MZ"
 }
@@ -730,6 +864,7 @@ pub fn run_globals(macho_path: &Path, args: &Args) -> Result<()> {
         println!("dry run");
         return Ok(());
     }
+    kill_running_studio(macho_path, args)?;
     if !args.no_backup {
         backup(macho_path)?;
     }
@@ -772,6 +907,7 @@ fn run_globals_pe(exe_path: &Path, data: &mut Vec<u8>, args: &Args) -> Result<()
         println!("dry run");
         return Ok(());
     }
+    kill_running_studio(exe_path, args)?;
     if !args.no_backup {
         backup(exe_path)?;
     }
@@ -818,6 +954,7 @@ pub fn run_sig(macho_path: &Path, args: &Args) -> Result<()> {
         println!("dry run");
         return Ok(());
     }
+    kill_running_studio(macho_path, args)?;
     if !args.no_backup {
         backup(macho_path)?;
     }

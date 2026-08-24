@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use regex::Regex;
 use serde_json::{json, Value};
 
-use crate::binary::backup;
+use crate::binary::{backup, kill_running_studio};
 use crate::rbxm;
 use crate::themes;
 use crate::Args;
@@ -160,6 +160,7 @@ fn patch_target(dir: &Path, obj: &serde_json::Map<String, Value>, t: &Target, ar
         }
     };
 
+    kill_running_studio(&rbxm_path, args)?;
     if do_backup {
         backup(&rbxm_path)?;
     }

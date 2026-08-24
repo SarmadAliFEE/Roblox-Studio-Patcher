@@ -5,7 +5,7 @@ use anyhow::Result;
 use crate::Args;
 
 #[cfg(not(target_os = "windows"))]
-const EDITOR_BACKGROUND_SOURCE: &str = include_str!("../hooks/editor_background.mm");
+const EDITOR_BACKGROUND_SOURCE: &str = include_str!("../hooks/editor_background/editor_background.mm");
 
 /// Compiles and injects the script-editor-background hook.
 #[cfg(not(target_os = "windows"))]
@@ -33,6 +33,7 @@ pub fn install_editor_background(macho_path: &Path, args: &Args) -> Result<()> {
     }
 
     themes::ensure_theme_jsons()?;
+    binary::kill_running_studio(macho_path, args)?;
     if !args.no_backup {
         binary::backup(macho_path)?;
     }
@@ -58,6 +59,7 @@ pub fn install_editor_background(exe_path: &Path, args: &Args) -> Result<()> {
     std::fs::write(&dll_path, EDITOR_BACKGROUND_DLL)?;
 
     themes::ensure_theme_jsons()?;
+    binary::kill_running_studio(exe_path, args)?;
     if !args.no_backup {
         binary::backup(exe_path)?;
     }
@@ -67,7 +69,7 @@ pub fn install_editor_background(exe_path: &Path, args: &Args) -> Result<()> {
 }
 
 #[cfg(not(target_os = "windows"))]
-const WINDOW_TRANSPARENCY_SOURCE: &str = include_str!("../hooks/window_transparency.mm");
+const WINDOW_TRANSPARENCY_SOURCE: &str = include_str!("../hooks/window_transparency/window_transparency.mm");
 
 /// Compiles and injects the whole-window-transparency hook.
 #[cfg(not(target_os = "windows"))]
@@ -95,6 +97,7 @@ pub fn install_window_transparency(macho_path: &Path, args: &Args) -> Result<()>
     }
 
     themes::ensure_theme_jsons()?;
+    binary::kill_running_studio(macho_path, args)?;
     if !args.no_backup {
         binary::backup(macho_path)?;
     }
@@ -120,6 +123,7 @@ pub fn install_window_transparency(exe_path: &Path, args: &Args) -> Result<()> {
     std::fs::write(&dll_path, WINDOW_TRANSPARENCY_DLL)?;
 
     themes::ensure_theme_jsons()?;
+    binary::kill_running_studio(exe_path, args)?;
     if !args.no_backup {
         binary::backup(exe_path)?;
     }

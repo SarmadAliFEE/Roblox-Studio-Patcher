@@ -328,7 +328,7 @@ impl Referents {
                 if prop.class_index != class_index || prop.name != "Name" {
                     continue;
                 }
-                return Ok(prop.entries.get(array_index).map(|e| String::from_utf8_lossy(e).into_owned()));
+                return Ok(prop.entries.get(array_index).map(|e: &Vec<u8>| String::from_utf8_lossy(e).into_owned()));
             }
             return Ok(None);
         }

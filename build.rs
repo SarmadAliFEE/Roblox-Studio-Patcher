@@ -25,21 +25,21 @@ fn build_hook_dll(out_dir: &PathBuf, source: &str, dll_name: &str, extra_libs: &
 
 fn main() {
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
-        println!("cargo:rerun-if-changed=hooks/editor_background_windows.cpp");
-        println!("cargo:rerun-if-changed=hooks/window_transparency_windows.cpp");
+        println!("cargo:rerun-if-changed=hooks/editor_background/editor_background_windows.cpp");
+        println!("cargo:rerun-if-changed=hooks/window_transparency/window_transparency_windows.cpp");
         return;
     }
 
     let out_dir: PathBuf = PathBuf::from(env::var("OUT_DIR").unwrap());
     build_hook_dll(
         &out_dir,
-        "hooks/editor_background_windows.cpp",
+        "hooks/editor_background/editor_background_windows.cpp",
         "editor_background_windows.dll",
         &["-ldbghelp", "-lgdi32"],
     );
     build_hook_dll(
         &out_dir,
-        "hooks/window_transparency_windows.cpp",
+        "hooks/window_transparency/window_transparency_windows.cpp",
         "window_transparency_windows.dll",
         &["-luser32"],
     );

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Result};
+use serde_json::Value;
 
 use crate::binary::{backup, find_matches, is_pe, kill_running_studio, resign, PatByte};
 use crate::palette::ensure_palette_defaults;
@@ -101,6 +102,108 @@ pub fn ensure_theme_jsons() -> Result<()> {
     Ok(())
 }
 
+const THEME_NAMES: [&str; 2] = ["FoundationDarkTheme.json", "FoundationLightTheme.json"];
+
+fn theme_url(name: &str) -> String {
+    format!(
+        "https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/roblox/QtResources/Platform/Base/QtUI/themes/{name}"
+    )
+}
+
+fn fetch_upstream(name: &str) -> Option<Value> {
+    let out = Command::new("curl")
+        .args(["-fsSL", "--connect-timeout", "5", "--max-time", "20"])
+        .arg(theme_url(name))
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    serde_json::from_slice(&out.stdout).ok()
+}
+
+fn merge_missing(local: &mut Value, upstream: &Value) -> usize {
+    let (Some(local_obj), Some(upstream_obj)) = (local.as_object_mut(), upstream.as_object())
+    else {
+        return 0;
+    };
+    let mut added: usize = 0;
+    for (key, upstream_value) in upstream_obj {
+        match local_obj.get_mut(key) {
+            Some(local_value) if local_value.is_object() && upstream_value.is_object() => {
+                added += merge_missing(local_value, upstream_value);
+            }
+            Some(_) => {}
+            None => {
+                local_obj.insert(key.clone(), upstream_value.clone());
+                added += 1;
+            }
+        }
+    }
+    added
+}
+
+pub fn sync_theme_jsons() {
+    for name in THEME_NAMES {
+        let dest: PathBuf = Path::new(THEMES_DIR).join(name);
+        let Ok(raw) = fs::read_to_string(&dest) else {
+            continue;
+        };
+        let Ok(mut local) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        let Some(upstream) = fetch_upstream(name) else {
+            continue;
+        };
+        let added: usize = merge_missing(&mut local, &upstream);
+        if added == 0 {
+            continue;
+        }
+        let Ok(text) = serde_json::to_string_pretty(&local) else {
+            continue;
+        };
+        if fs::write(&dest, format!("{text}\n")).is_ok() {
+            let plural: &str = if added == 1 { "entry" } else { "entries" };
+            println!(
+                "    {}",
+                crate::term::dim(&format!("synced {added} new {plural} into {name}"))
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_missing;
+    use serde_json::json;
+
+    #[test]
+    fn adds_only_missing_keys_and_never_touches_existing_ones() {
+        let mut local = json!({
+            "Name": "Dark",
+            "Presets": { "RobloxDefault": { "Default": "#EDITED" } },
+            "RbxmPalette": { "mine": 1 }
+        });
+        let upstream = json!({
+            "Name": "Dark",
+            "Presets": {
+                "RobloxDefault": { "Default": "#UPSTREAM", "NewKey": "#123456" },
+                "NewPreset": { "A": "#000000" }
+            },
+            "TopLevelNew": true
+        });
+
+        let added = merge_missing(&mut local, &upstream);
+
+        assert_eq!(added, 3, "NewKey, NewPreset, TopLevelNew");
+        assert_eq!(local["Presets"]["RobloxDefault"]["Default"], "#EDITED");
+        assert_eq!(local["Presets"]["RobloxDefault"]["NewKey"], "#123456");
+        assert_eq!(local["Presets"]["NewPreset"]["A"], "#000000");
+        assert_eq!(local["TopLevelNew"], true);
+        assert_eq!(local["RbxmPalette"]["mine"], 1);
+    }
+}
+
 pub fn run_themes(macho_path: &Path, args: &Args) -> Result<()> {
     let dark_new: String = dark_json_path().to_string_lossy().into_owned();
     let light_new: String = light_json_path().to_string_lossy().into_owned();
@@ -152,6 +255,7 @@ pub fn run_themes(macho_path: &Path, args: &Args) -> Result<()> {
     println!("redirected {} theme path(s) to {THEMES_DIR}", sites.len());
 
     ensure_theme_jsons()?;
+    sync_theme_jsons();
     ensure_palette_defaults(&dark_json_path())?;
     println!("edit the jsons in {THEMES_DIR} then relaunch studio");
 

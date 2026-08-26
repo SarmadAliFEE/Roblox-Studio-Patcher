@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -55,25 +56,6 @@ const TARGETS: &[Target] = &[
             ("FindReplace_Border", "Gray_1000", "#202227"),
         ],
     },
-    Target {
-        rbxm_file: "StartPage.rbxm",
-        module_name: "Dark",
-        lookup: Lookup::ByPath("RbxDesignFoundations-31ab8d40-2.0.163"),
-        colors: &[
-            ("StartPage_Backdrop", "Backdrop", "#0a0a0e"),
-            ("StartPage_Backdrop", "Scrim", "#0a0a0e"),
-            ("StartPage_Background", "Gray_1200", "#121215"),
-            ("StartPage_Background", "NavigationBar", "#121215"),
-            ("StartPage_Background", "Surface_0", "#121215"),
-            ("StartPage_Background", "OverMedia_0", "#121215"),
-            ("StartPage_Surface", "Gray_1100", "#191A1F"),
-            ("StartPage_Surface", "Surface_100", "#191A1F"),
-            ("StartPage_Surface", "OverMedia_100", "#191A1F"),
-            ("StartPage_Border", "Gray_1000", "#202227"),
-            ("StartPage_Border", "Surface_200", "#202227"),
-            ("StartPage_Border", "OverMedia_200", "#202227"),
-        ],
-    },
 ];
 
 fn hex_to_rgb(hex: &str) -> Result<(u8, u8, u8)> {
@@ -117,56 +99,21 @@ fn json_hex(obj: &serde_json::Map<String, Value>, json_key: &str) -> Result<Stri
     Ok(value.as_str().with_context(|| format!("{json_key} isn't a string"))?.to_string())
 }
 
-fn build_source(recolors: &[(&str, (u8, u8, u8), (u8, u8, u8))]) -> String {
+fn build_source(colors: &HashMap<String, (u8, u8, u8)>) -> String {
     let mut source: String = DARK_TOKENS_TEMPLATE.to_string();
-    for (name, (or, og, ob), (nr, ng, nb)) in recolors {
+    for (name, (r, g, b)) in colors {
         let pattern: String = format!(
-            r"({name}\s*=\s*\{{\s*Color3\s*=\s*Color3\.fromRGB\()\s*{or}\s*,\s*{og}\s*,\s*{ob}\s*(\))"
+            r"({name}\s*=\s*\{{\s*Color3\s*=\s*Color3\.fromRGB\()\s*\d+\s*,\s*\d+\s*,\s*\d+\s*(\))"
         );
         let re: Regex = Regex::new(&pattern).unwrap();
-        let replacement: String = format!("${{1}}{nr}, {ng}, {nb}${{2}}");
-        source = re.replace_all(&source, replacement.as_str()).into_owned();
+        let replacement: String = format!("${{1}}{r}, {g}, {b}${{2}}");
+        source = re.replace(&source, replacement.as_str()).into_owned();
     }
     source
 }
 
 fn compile_lua(source: &str) -> Result<Vec<u8>> {
     crate::luau::compile(source).map_err(|e| anyhow::anyhow!("luau compile failed: {e}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{build_source, DARK_TOKENS_TEMPLATE};
-
-    #[test]
-    fn recolors_the_dark_occurrence_and_leaves_the_light_one_alone() {
-        let recolors = [("NavigationBar", (18u8, 18, 21), (1u8, 2, 3))];
-        let source = build_source(&recolors);
-        assert_eq!(source.matches("Color3.fromRGB(1, 2, 3)").count(), 3);
-        assert!(source.contains("Color3.fromRGB(255, 255, 255)"));
-    }
-
-    #[test]
-    fn recoloring_the_surface_ramp_never_touches_light_theme_whites() {
-        let recolors = [
-            ("Backdrop", (10u8, 10, 14), (15u8, 14, 28)),
-            ("Scrim", (10, 10, 14), (15, 14, 28)),
-            ("NavigationBar", (18, 18, 21), (25, 24, 48)),
-            ("Surface_0", (18, 18, 21), (25, 24, 48)),
-            ("OverMedia_0", (18, 18, 21), (25, 24, 48)),
-            ("Surface_100", (25, 26, 31), (21, 21, 43)),
-            ("OverMedia_100", (25, 26, 31), (21, 21, 43)),
-            ("Surface_200", (32, 34, 39), (52, 50, 99)),
-            ("OverMedia_200", (32, 34, 39), (52, 50, 99)),
-        ];
-        let source = build_source(&recolors);
-        for white in ["Color3.fromRGB(255, 255, 255)", "Color3.fromRGB(247, 247, 248)"] {
-            assert_eq!(
-                source.matches(white).count(),
-                DARK_TOKENS_TEMPLATE.matches(white).count()
-            );
-        }
-    }
 }
 
 pub fn plugins_dir(target: &Path) -> Result<PathBuf> {
@@ -195,19 +142,12 @@ fn patch_target(dir: &Path, obj: &serde_json::Map<String, Value>, t: &Target, ar
         return Ok(());
     }
 
-    let mut recolors: Vec<(&str, (u8, u8, u8), (u8, u8, u8))> = Vec::new();
-    for (json_key, lua_field, default_hex) in t.colors {
-        let original: (u8, u8, u8) = hex_to_rgb(default_hex)?;
-        let navy: (u8, u8, u8) = hex_to_rgb(&json_hex(obj, json_key)?)?;
-        recolors.push((lua_field, original, navy));
+    let mut colors: HashMap<String, (u8, u8, u8)> = HashMap::new();
+    for (json_key, lua_field, _) in t.colors {
+        colors.insert(lua_field.to_string(), hex_to_rgb(&json_hex(obj, json_key)?)?);
     }
-    let markers: Vec<&str> = t
-        .colors
-        .iter()
-        .map(|(_, lua_field, _)| *lua_field)
-        .filter(|lua_field| lua_field.starts_with("Gray_"))
-        .collect();
-    let source: String = build_source(&recolors);
+    let markers: Vec<&str> = t.colors.iter().map(|(_, lua_field, _)| *lua_field).collect();
+    let source: String = build_source(&colors);
     let bytecode: Vec<u8> = compile_lua(&source)?;
 
     let data: Vec<u8> = fs::read(&rbxm_path)?;

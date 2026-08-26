@@ -67,7 +67,10 @@ fn install(url: &str) -> Result<()> {
 
 pub fn check_and_prompt() {
     let current = env!("CARGO_PKG_VERSION");
-    let (version, url) = match latest_release() {
+    let spinner = crate::term::Spinner::start("checking for updates");
+    let latest = latest_release();
+    spinner.finish();
+    let (version, url) = match latest {
         Ok(r) => r,
         Err(e) => return crate::term::warn(&format!("update check failed ({e}), skipping")),
     };

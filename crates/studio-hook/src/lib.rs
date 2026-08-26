@@ -61,3 +61,7 @@ pub extern "system" fn DllMain(_module: *mut core::ffi::c_void, reason: u32, _re
     }
     1
 }
+
+#[cfg(target_os = "windows")]
+#[unsafe(no_mangle)]
+pub extern "system" fn RSPHookInit() {}

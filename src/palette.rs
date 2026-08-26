@@ -56,6 +56,16 @@ const TARGETS: &[Target] = &[
             ("FindReplace_Border", "Gray_1000", "#202227"),
         ],
     },
+    Target {
+        rbxm_file: "StartPage.rbxm",
+        module_name: "Dark",
+        lookup: Lookup::ByPath("RbxDesignFoundations-31ab8d40-2.0.163"),
+        colors: &[
+            ("StartPage_Background", "Gray_1200", "#121215"),
+            ("StartPage_Surface", "Gray_1100", "#191A1F"),
+            ("StartPage_Border", "Gray_1000", "#202227"),
+        ],
+    },
 ];
 
 fn hex_to_rgb(hex: &str) -> Result<(u8, u8, u8)> {

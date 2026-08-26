@@ -5,7 +5,7 @@ use std::time::Duration;
 
 const OP_HANDSHAKE: u32 = 0;
 const OP_FRAME: u32 = 1;
-const RECONNECT_INTERVAL: Duration = Duration::from_millis(5000);
+const RECONNECT_INTERVAL: Duration = Duration::from_millis(2000);
 const MAX_FRAME: u32 = 1 << 20;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

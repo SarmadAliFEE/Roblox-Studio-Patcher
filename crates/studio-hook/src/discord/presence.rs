@@ -4,7 +4,7 @@ use crate::discord::ipc::{Activity, Ipc};
 use crate::discord::place;
 use crate::vm::exec::{self, Primitives, Value};
 
-const POLL_INTERVAL: Duration = Duration::from_millis(1000);
+const POLL_INTERVAL: Duration = Duration::from_millis(400);
 const ZERO_PLACE_DEBOUNCE: u32 = 2;
 
 const POLL_SCRIPT: &str = r#"

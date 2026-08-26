@@ -223,24 +223,27 @@ fn find_studio_processes(root: Option<&Path>) -> Result<Vec<StudioProcess>> {
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "Get-Process | Where-Object { $_.Path } | ForEach-Object { '{0}`t{1}' -f $_.Id, $_.Path }",
+            "Get-CimInstance Win32_Process | ForEach-Object { '{0}`t{1}`t{2}' -f $_.ProcessId, $_.Name, $_.ExecutablePath }",
         ])
         .output()?;
     let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stdout);
+    let root_lower: Option<String> = root.map(|r: &Path| r.to_string_lossy().to_ascii_lowercase());
     let mut found: Vec<StudioProcess> = vec![];
     for line in text.lines() {
-        let Some((pid_str, path_str)) = line.trim().split_once('\t') else {
+        let mut parts = line.trim().splitn(3, '\t');
+        let (Some(pid_str), Some(name)) = (parts.next(), parts.next()) else {
             continue;
         };
         let Ok(pid) = pid_str.trim().parse::<u32>() else {
             continue;
         };
-        let path: PathBuf = PathBuf::from(path_str.trim());
-        let name: &str = path.file_name().and_then(|n: &std::ffi::OsStr| n.to_str()).unwrap_or("");
-        let matched: bool = match root {
-            Some(r) => path.starts_with(r),
-            None => STUDIO_PROCESS_NAMES.iter().any(|n: &&str| n.eq_ignore_ascii_case(name)),
-        };
+        let name: &str = name.trim();
+        let exe_path: &str = parts.next().unwrap_or("").trim();
+        let path: PathBuf = if exe_path.is_empty() { PathBuf::from(name) } else { PathBuf::from(exe_path) };
+        let matched: bool = STUDIO_PROCESS_NAMES.iter().any(|n: &&str| n.eq_ignore_ascii_case(name))
+            || root_lower
+                .as_deref()
+                .is_some_and(|r: &str| path.to_string_lossy().to_ascii_lowercase().starts_with(r));
         if matched {
             found.push(StudioProcess { pid, path });
         }

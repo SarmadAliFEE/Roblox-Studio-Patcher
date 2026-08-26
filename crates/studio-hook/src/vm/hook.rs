@@ -36,7 +36,6 @@ unsafe extern "C" fn hooked_step(job: *mut c_void, stats: *mut c_void) -> *mut c
 enum Action {
     Poll(Ready, bool),
     Idle,
-    Hold,
 }
 
 fn observe(job: usize) {
@@ -46,15 +45,13 @@ fn observe(job: usize) {
         let Some(discovery) = slot.as_mut() else { return };
         discovery.on_step(job, now);
         match discovery.edit(now) {
-            Some(ready) if ready.job == job => Action::Poll(ready, discovery.play_test_active(now)),
-            Some(_) => Action::Hold,
+            Some(ready) => Action::Poll(ready, discovery.play_test_active(now)),
             None => Action::Idle,
         }
     };
     match action {
         Action::Poll(ready, play_test) => drive_presence(ready, play_test),
         Action::Idle => drive_idle(),
-        Action::Hold => {}
     }
 }
 
@@ -74,15 +71,11 @@ fn drive_idle() {
 }
 
 pub fn install() -> Result<usize, InstallError> {
-    if cfg!(not(target_arch = "aarch64")) {
-        crate::log("studio-hook: vm hook (discord presence) is arm64-only for now");
-        return Err(InstallError::Unsupported);
-    }
-
     let flags = crate::vm::luau::enable_luau_flags();
     crate::log(&format!("luau: enabled {flags} compiler flag(s)"));
 
     let resolved = resolve::resolve().map_err(InstallError::Resolve)?;
+    crate::log(&resolved.summarize());
 
     let (Some(data_model), Some(script_context)) =
         (resolved.data_model_vtable, resolved.script_context_vtable)

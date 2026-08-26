@@ -67,11 +67,12 @@ pub struct Discovery {
     vtables: Vtables,
     jobs: Vec<Tracked>,
     live_edit: Option<usize>,
+    capture: Option<Ready>,
 }
 
 impl Discovery {
     pub fn new(vtables: Vtables) -> Discovery {
-        Discovery { vtables, jobs: Vec::new(), live_edit: None }
+        Discovery { vtables, jobs: Vec::new(), live_edit: None, capture: None }
     }
 
     pub fn on_step(&mut self, job: usize, now: Instant) {
@@ -80,15 +81,21 @@ impl Discovery {
         self.locate_data_model(index, job);
         self.resolve_lua_state(index, job);
         self.retire_stale(now);
+        self.capture = self.edit(now);
         self.announce_edit(now);
     }
 
     pub fn edit(&self, now: Instant) -> Option<Ready> {
+        if let Some(ready) = self.capture {
+            if self.still_live(&ready) {
+                return Some(ready);
+            }
+        }
         self.jobs
             .iter()
             .filter(|j| j.is_edit() && now.duration_since(j.last_seen) < STALE_AFTER)
-            .find_map(Tracked::edit_ready)
-            .filter(|ready| self.still_live(ready))
+            .filter_map(Tracked::edit_ready)
+            .find(|ready| self.still_live(ready))
     }
 
     fn still_live(&self, ready: &Ready) -> bool {
@@ -153,7 +160,9 @@ impl Discovery {
                 entry.game_state = vm::game_state_type(data_model).unwrap_or(-1);
                 entry.dm_searched = true;
             }
-            None if entry.dm_cursor.exhausted() => entry.dm_searched = true,
+            None if entry.dm_cursor.exhausted() => {
+                entry.dm_searched = true;
+            }
             None => {}
         }
     }
@@ -163,9 +172,22 @@ impl Discovery {
         if !entry.is_edit() || entry.data_model.is_none() || entry.lua_state.is_some() {
             return;
         }
-        let Some(context) = self.find_script_context(job) else { return };
-        let lua_state = vm::authoritative_lua_state(context)
-            .or_else(|| vm::find_lua_state_near(context, 0x100, &mut Cursor::default()));
+        let data_model = entry.data_model;
+        if let Some((context, lua_state)) = self.jobs.iter().find_map(|j| {
+            (j.data_model == data_model && j.lua_state.is_some())
+                .then(|| (j.script_context, j.lua_state))
+        }) {
+            let entry = &mut self.jobs[index];
+            entry.script_context = context;
+            entry.lua_state = lua_state;
+            return;
+        }
+        let context = self.find_script_context(job);
+        let lua_state = context.and_then(|context| {
+            vm::authoritative_lua_state(context)
+                .or_else(|| vm::find_lua_state_near(context, 0x100, &mut Cursor::default()))
+        });
+        let Some(context) = context else { return };
         let entry = &mut self.jobs[index];
         entry.script_context = Some(context);
         entry.lua_state = lua_state;

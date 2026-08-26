@@ -51,13 +51,39 @@ mod arch {
 
 #[cfg(not(target_arch = "aarch64"))]
 mod arch {
-    pub const STEP: &str = "";
-    pub const LUAU_LOAD_WRAPPER: &str = "";
-    pub const CALL_DISPATCH: &str = "";
+    pub const STEP: &str = concat!(
+        "48 89 5c 24 10 48 89 74 24 18 55 57 41 56 48 8d ",
+        "6c 24 b9 48 81 ec c0 00 00 00 4c 8b f2 48 8b f1 ",
+        "80 b9 90 01 00 00 00 75 1d 48 8b 81 98 01 00 00 ",
+        "0f b6 80 50 07 00 00",
+    );
+
+    pub const LUAU_LOAD_WRAPPER: &str = concat!(
+        "48 89 5c 24 08 48 89 6c 24 10 48 89 74 24 18 57 ",
+        "41 56 41 57 48 81 ec 80 00 00 00 49 8b e9 4d 8b ",
+        "f0 4c 8b fa 48 8b f9 48 8b 59 30 48 8b 43 50 48 ",
+        "39 43 58 72",
+    );
+
+    pub const CALL_DISPATCH: &str = concat!(
+        "48 89 74 24 10 57 48 83 ec 20 49 63 f0 48 8b f9 ",
+        "44 8b c6 e8 ?? ?? ?? ?? 85 c0 75 66 48 8b 47 30 ",
+        "48 89 5c 24 30 48 8b 90 28 05 00 00 48 85 d2 74 ",
+        "05 48 8b cf ff d2 4c 8b 47 58",
+    );
+
     pub const TASK_DEFER: &str = "";
-    pub const LUA_NEWTHREAD: &str = "";
-    pub const CAN_ACCESS_RESTRICTED: &str = "";
-    pub const CAN_ACCESS_RESTRICTED_BL: usize = 0;
+    pub const LUA_NEWTHREAD: &str = concat!(
+        "40 53 48 83 ec 20 48 8b 51 30 48 8b d9 48 8b 42 ",
+        "50 48 39 42 58 72 07 b2 01 e8 ?? ?? ?? ?? f6 43 ",
+        "01 04 74",
+    );
+    pub const CAN_ACCESS_RESTRICTED: &str = concat!(
+        "48 89 5c 24 60 e8 ?? ?? ?? ?? 48 8b d8 48 8b 40 ",
+        "30 48 85 c0 74 16 48 8b 53 18 48 8b 4b 28 ff d0 ",
+        "48 89 43 28 48 c7 43 30 00 00 00 00 0f b6 43 28",
+    );
+    pub const CAN_ACCESS_RESTRICTED_BL: usize = 0x5;
 }
 
 pub use arch::*;

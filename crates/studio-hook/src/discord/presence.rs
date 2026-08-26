@@ -219,8 +219,6 @@ impl Presence {
             }
         } else {
             activity.state = "Editing Workspace".into();
-            activity.small_image = "stop".into();
-            activity.small_text = "Not testing".into();
         }
 
         Some(activity)

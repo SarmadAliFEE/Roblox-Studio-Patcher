@@ -60,17 +60,34 @@ fn find_optional(name: &'static str, spec: &str, text: &[Segment]) -> Option<usi
     }
 }
 
-fn find_security_context_current(text: &[Segment]) -> Option<usize> {
-    let checker = match find_unique("can_access_restricted", sig::CAN_ACCESS_RESTRICTED, text) {
-        Ok(addr) => addr,
-        Err(err) => {
-            crate::log(&format!("resolve: canAccessRestricted unavailable ({err:?})"));
-            return None;
+fn find_first(name: &'static str, spec: &str, text: &[Segment]) -> Option<usize> {
+    let pattern = Pattern::parse(spec).ok()?;
+    for segment in text {
+        let Some(bytes) = segment.as_slice() else { continue };
+        if let Some(at) = pattern.find_all(bytes).into_iter().next() {
+            return Some(segment.start + at);
         }
-    };
+    }
+    crate::log(&format!("resolve: {name} unavailable (NotFound)"));
+    None
+}
+
+fn find_security_context_current(text: &[Segment]) -> Option<usize> {
+    if sig::CAN_ACCESS_RESTRICTED.is_empty() {
+        return None;
+    }
+    let checker = find_first("can_access_restricted", sig::CAN_ACCESS_RESTRICTED, text)?;
     let call_site = checker + sig::CAN_ACCESS_RESTRICTED_BL;
-    let instruction: u32 = crate::mem::read(call_site).ok()?;
-    crate::scan::decode_arm64_bl(instruction, call_site)
+    #[cfg(target_arch = "aarch64")]
+    {
+        let instruction: u32 = crate::mem::read(call_site).ok()?;
+        crate::scan::decode_arm64_bl(instruction, call_site)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let rel: i32 = crate::mem::read(call_site + 1).ok()?;
+        Some((call_site as isize + 5 + rel as isize) as usize)
+    }
 }
 
 pub fn resolve() -> Result<Resolved, ResolveError> {

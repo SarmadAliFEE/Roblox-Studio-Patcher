@@ -610,10 +610,7 @@ mod imp {
         unsafe { *slot = paint_detour as *const () as usize };
         unsafe { VirtualProtect(slot as *const c_void, 8, old, &mut old) };
         win.hooked.push((vtable, original));
-        crate::log(&format!(
-            "editor-bg: hooked vtable={vtable:#x} class={name} original={original:#x} (total {})",
-            win.hooked.len()
-        ));
+        crate::log(&format!("editor-bg: hooked {name} (total {})", win.hooked.len()));
     }
 
     unsafe extern "C" fn paint_detour(self_: *mut c_void, event: *mut c_void) {

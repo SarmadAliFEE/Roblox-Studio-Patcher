@@ -217,35 +217,21 @@ fn kill_pid(pid: u32) {
 }
 
 #[cfg(target_os = "windows")]
-fn find_studio_processes(root: Option<&Path>) -> Result<Vec<StudioProcess>> {
-    let out: std::process::Output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "Get-CimInstance Win32_Process | ForEach-Object { '{0}`t{1}`t{2}' -f $_.ProcessId, $_.Name, $_.ExecutablePath }",
-        ])
-        .output()?;
+fn find_studio_processes(_root: Option<&Path>) -> Result<Vec<StudioProcess>> {
+    let out: std::process::Output = Command::new("tasklist").args(["/NH", "/FO", "CSV"]).output()?;
     let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stdout);
-    let root_lower: Option<String> = root.map(|r: &Path| r.to_string_lossy().to_ascii_lowercase());
     let mut found: Vec<StudioProcess> = vec![];
     for line in text.lines() {
-        let mut parts = line.trim().splitn(3, '\t');
-        let (Some(pid_str), Some(name)) = (parts.next(), parts.next()) else {
+        let fields: Vec<&str> = line.trim().split("\",\"").collect();
+        let (Some(name_field), Some(pid_field)) = (fields.first(), fields.get(1)) else {
             continue;
         };
-        let Ok(pid) = pid_str.trim().parse::<u32>() else {
+        let name: &str = name_field.trim().trim_matches('"');
+        let Ok(pid) = pid_field.trim().trim_matches('"').parse::<u32>() else {
             continue;
         };
-        let name: &str = name.trim();
-        let exe_path: &str = parts.next().unwrap_or("").trim();
-        let path: PathBuf = if exe_path.is_empty() { PathBuf::from(name) } else { PathBuf::from(exe_path) };
-        let matched: bool = STUDIO_PROCESS_NAMES.iter().any(|n: &&str| n.eq_ignore_ascii_case(name))
-            || root_lower
-                .as_deref()
-                .is_some_and(|r: &str| path.to_string_lossy().to_ascii_lowercase().starts_with(r));
-        if matched {
-            found.push(StudioProcess { pid, path });
+        if STUDIO_PROCESS_NAMES.iter().any(|n: &&str| n.eq_ignore_ascii_case(name)) {
+            found.push(StudioProcess { pid, path: PathBuf::from(name) });
         }
     }
     Ok(found)

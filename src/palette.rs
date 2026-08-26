@@ -61,9 +61,18 @@ const TARGETS: &[Target] = &[
         module_name: "Dark",
         lookup: Lookup::ByPath("RbxDesignFoundations-31ab8d40-2.0.163"),
         colors: &[
+            ("StartPage_Backdrop", "Backdrop", "#0a0a0e"),
+            ("StartPage_Backdrop", "Scrim", "#0a0a0e"),
             ("StartPage_Background", "Gray_1200", "#121215"),
+            ("StartPage_Background", "NavigationBar", "#121215"),
+            ("StartPage_Background", "Surface_0", "#121215"),
+            ("StartPage_Background", "OverMedia_0", "#121215"),
             ("StartPage_Surface", "Gray_1100", "#191A1F"),
+            ("StartPage_Surface", "Surface_100", "#191A1F"),
+            ("StartPage_Surface", "OverMedia_100", "#191A1F"),
             ("StartPage_Border", "Gray_1000", "#202227"),
+            ("StartPage_Border", "Surface_200", "#202227"),
+            ("StartPage_Border", "OverMedia_200", "#202227"),
         ],
     },
 ];
@@ -117,13 +126,29 @@ fn build_source(colors: &HashMap<String, (u8, u8, u8)>) -> String {
         );
         let re: Regex = Regex::new(&pattern).unwrap();
         let replacement: String = format!("${{1}}{r}, {g}, {b}${{2}}");
-        source = re.replace(&source, replacement.as_str()).into_owned();
+        source = re.replace_all(&source, replacement.as_str()).into_owned();
     }
     source
 }
 
 fn compile_lua(source: &str) -> Result<Vec<u8>> {
     crate::luau::compile(source).map_err(|e| anyhow::anyhow!("luau compile failed: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_source;
+    use std::collections::HashMap;
+
+    #[test]
+    fn recolors_surface_families_beyond_the_gray_ramp() {
+        let mut colors: HashMap<String, (u8, u8, u8)> = HashMap::new();
+        for field in ["NavigationBar", "Surface_0", "Backdrop"] {
+            colors.insert(field.to_string(), (1, 2, 3));
+        }
+        let source = build_source(&colors);
+        assert!(source.matches("Color3.fromRGB(1, 2, 3)").count() >= 3);
+    }
 }
 
 pub fn plugins_dir(target: &Path) -> Result<PathBuf> {
@@ -156,7 +181,12 @@ fn patch_target(dir: &Path, obj: &serde_json::Map<String, Value>, t: &Target, ar
     for (json_key, lua_field, _) in t.colors {
         colors.insert(lua_field.to_string(), hex_to_rgb(&json_hex(obj, json_key)?)?);
     }
-    let markers: Vec<&str> = t.colors.iter().map(|(_, lua_field, _)| *lua_field).collect();
+    let markers: Vec<&str> = t
+        .colors
+        .iter()
+        .map(|(_, lua_field, _)| *lua_field)
+        .filter(|lua_field| lua_field.starts_with("Gray_"))
+        .collect();
     let source: String = build_source(&colors);
     let bytecode: Vec<u8> = compile_lua(&source)?;
 

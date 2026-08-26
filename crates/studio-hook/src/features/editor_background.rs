@@ -491,7 +491,6 @@ mod imp {
         opacity: f64,
         qt: Option<Qt>,
         pixmap: Option<[u8; 128]>,
-        scaled: Option<(i32, i32, [u8; 128])>,
         hooked: Vec<(usize, usize)>,
     }
 
@@ -506,7 +505,6 @@ mod imp {
             opacity: config.opacity,
             qt: None,
             pixmap: None,
-            scaled: None,
             hooked: Vec::new(),
         });
         unsafe { SetTimer(0 as HWND, 0, 1000, Some(retry)) };
@@ -576,7 +574,7 @@ mod imp {
                 continue;
             }
             let vtable = unsafe { *(widget as *const usize) };
-            hook_vtable(win, vtable);
+            hook_vtable(win, vtable, &name);
         }
     }
 
@@ -599,7 +597,7 @@ mod imp {
         }
     }
 
-    fn hook_vtable(win: &mut Win, vtable: usize) {
+    fn hook_vtable(win: &mut Win, vtable: usize, name: &str) {
         if win.hooked.iter().any(|(v, _)| *v == vtable) || win.hooked.len() >= MAX_HOOKED {
             return;
         }
@@ -612,7 +610,10 @@ mod imp {
         unsafe { *slot = paint_detour as *const () as usize };
         unsafe { VirtualProtect(slot as *const c_void, 8, old, &mut old) };
         win.hooked.push((vtable, original));
-        crate::log(&format!("editor-bg: hooked vtable={vtable:#x} (total {})", win.hooked.len()));
+        crate::log(&format!(
+            "editor-bg: hooked vtable={vtable:#x} class={name} original={original:#x} (total {})",
+            win.hooked.len()
+        ));
     }
 
     unsafe extern "C" fn paint_detour(self_: *mut c_void, event: *mut c_void) {
@@ -620,17 +621,36 @@ mod imp {
     }
 
     fn paint(self_: *mut c_void, event: *mut c_void) {
-        let mut guard = STATE.lock().unwrap_or_else(|p| p.into_inner());
-        let Some(win) = guard.as_mut() else { return };
-        let Some(qt) = win.qt else { return };
+        thread_local! {
+            static IN_PAINT: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+        }
 
         let vtable = unsafe { *(self_ as *const usize) };
-        if let Some((_, original)) = win.hooked.iter().find(|(v, _)| *v == vtable) {
-            let original: PaintFn = unsafe { core::mem::transmute(*original) };
+        let (qt, pixmap, opacity, original) = {
+            let guard = STATE.lock().unwrap_or_else(|p| p.into_inner());
+            let Some(win) = guard.as_ref() else { return };
+            let Some(qt) = win.qt else { return };
+            let original = win.hooked.iter().find(|(v, _)| *v == vtable).map(|(_, o)| *o);
+            (qt, win.pixmap, win.opacity, original)
+        };
+
+        if let Some(original) = original {
+            let original: PaintFn = unsafe { core::mem::transmute::<usize, PaintFn>(original) };
             unsafe { original(self_, event) };
         }
 
-        let Some(pixmap) = win.pixmap else { return };
+        if IN_PAINT.with(|flag| flag.replace(true)) {
+            return;
+        }
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                IN_PAINT.with(|flag| flag.set(false));
+            }
+        }
+        let _reset = Reset;
+
+        let Some(pixmap) = pixmap else { return };
         let widget = {
             let vp = unsafe { (qt.viewport)(self_) };
             if vp.is_null() { self_ as *const c_void } else { vp }
@@ -656,38 +676,42 @@ mod imp {
         let sw = ((pw as f64 * scale + 0.5) as i32).clamp(1, 16384);
         let sh = ((ph as f64 * scale + 0.5) as i32).clamp(1, 16384);
 
-        let stale = !matches!(win.scaled, Some((cw, ch, _)) if cw == sw && ch == sh);
-        if stale {
-            if let Some((_, _, mut old)) = win.scaled.take() {
-                unsafe { (qt.pixmap_dtor)(old.as_mut_ptr() as *mut c_void) };
-            }
-            let target = QSizeRaw { w: sw, h: sh };
-            let mut scaled = [0u8; 128];
-            unsafe {
-                (qt.pixmap_scaled)(
-                    pixmap.as_ptr() as *mut c_void,
-                    scaled.as_mut_ptr() as *mut c_void,
-                    &target as *const QSizeRaw as *const c_void,
-                    0,
-                    1,
-                )
-            };
-            win.scaled = Some((sw, sh, scaled));
+        let target = QSizeRaw { w: sw, h: sh };
+        thread_local! {
+            static SCALED: core::cell::RefCell<Option<(i32, i32, [u8; 128])>> =
+                const { core::cell::RefCell::new(None) };
         }
-
-        let (draw_w, draw_h, source) = match &win.scaled {
-            Some((cw, ch, buf)) => (*cw, *ch, buf.as_ptr() as *const c_void),
-            None => (pw, ph, pixmap.as_ptr() as *const c_void),
-        };
+        let source = SCALED.with(|cell| {
+            let mut cache = cell.borrow_mut();
+            if !matches!(cache.as_ref(), Some((cw, ch, _)) if *cw == sw && *ch == sh) {
+                if let Some((_, _, mut old)) = cache.take() {
+                    unsafe { (qt.pixmap_dtor)(old.as_mut_ptr() as *mut c_void) };
+                }
+                *cache = Some((sw, sh, [0u8; 128]));
+                let buf = cache.as_mut().unwrap().2.as_mut_ptr() as *mut c_void;
+                unsafe {
+                    (qt.pixmap_scaled)(
+                        pixmap.as_ptr() as *mut c_void,
+                        buf,
+                        &target as *const QSizeRaw as *const c_void,
+                        0,
+                        1,
+                    )
+                };
+            }
+            cache.as_ref().unwrap().2.as_ptr() as *const c_void
+        });
 
         let device = unsafe { widget.byte_offset(PAINTDEVICE_SUBOBJECT_OFFSET as isize) };
         let mut painter = [0u8; 64];
         unsafe { (qt.painter_ctor)(painter.as_mut_ptr() as *mut c_void, device) };
-        unsafe { (qt.set_opacity)(painter.as_mut_ptr() as *mut c_void, win.opacity) };
+        unsafe { (qt.set_opacity)(painter.as_mut_ptr() as *mut c_void, opacity) };
 
-        let dest = [(vw - draw_w as f64) / 2.0, (vh - draw_h as f64) / 2.0, draw_w as f64, draw_h as f64];
-        let src = [0.0, 0.0, draw_w as f64, draw_h as f64];
-        unsafe { (qt.draw_pixmap)(painter.as_mut_ptr() as *mut c_void, &dest, source, &src) };
+        let dest = [(vw - sw as f64) / 2.0, (vh - sh as f64) / 2.0, sw as f64, sh as f64];
+        let src = [0.0, 0.0, sw as f64, sh as f64];
+        unsafe {
+            (qt.draw_pixmap)(painter.as_mut_ptr() as *mut c_void, &dest, source, &src)
+        };
         unsafe { (qt.painter_dtor)(painter.as_mut_ptr() as *mut c_void) };
     }
 

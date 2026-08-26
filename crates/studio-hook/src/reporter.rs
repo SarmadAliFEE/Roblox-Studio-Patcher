@@ -70,8 +70,34 @@ fn os_line() -> String {
         }
         return format!("{os} ({arch})");
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let mut os = std::env::consts::OS.to_string();
+        if let Some(version) = windows_version() {
+            os.push(' ');
+            os.push_str(&version);
+        }
+        return format!("{os} ({arch})");
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     format!("{} ({arch})", std::env::consts::OS)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_version() -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let out = std::process::Command::new("cmd")
+        .args(["/c", "ver"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let line = raw.lines().map(str::trim).find(|line| !line.is_empty())?;
+    Some(line.to_owned())
 }
 
 fn load_config() -> Option<(bool, String)> {
@@ -174,6 +200,7 @@ mod crash {
 
     static WRITE_FD: AtomicI32 = AtomicI32::new(-1);
     static IMAGE_BASE: AtomicUsize = AtomicUsize::new(0);
+    static HOOK_BASE: AtomicUsize = AtomicUsize::new(0);
     static PREV_HANDLER: [AtomicUsize; 6] = [const { AtomicUsize::new(0) }; 6];
     static PREV_FLAGS: [AtomicI32; 6] = [const { AtomicI32::new(0) }; 6];
 
@@ -190,6 +217,10 @@ mod crash {
         // Main-executable base so backtrace addresses resolve to offsets.
         if let Some(image) = crate::platform::find_main_image() {
             IMAGE_BASE.store(image.base(), Ordering::Release);
+        }
+        let mut dl_info: libc::Dl_info = unsafe { core::mem::zeroed() };
+        if unsafe { libc::dladdr(handler as *const c_void, &mut dl_info) } != 0 {
+            HOOK_BASE.store(dl_info.dli_fbase as usize, Ordering::Release);
         }
 
         unsafe {
@@ -211,6 +242,12 @@ mod crash {
                 PREV_FLAGS[index].store(old.sa_flags, Ordering::Release);
             }
         }
+
+        super::report(&format!(
+            "crash handler armed - image=0x{:x} hook=0x{:x}",
+            IMAGE_BASE.load(Ordering::Acquire),
+            HOOK_BASE.load(Ordering::Acquire)
+        ));
     }
 
     fn spawn_helper(webhook: &str) -> Option<i32> {
@@ -252,6 +289,8 @@ mod crash {
         len += write_uint(&mut buf[len..], fault as u64, 16);
         len = append(&mut buf, len, b" base=0x");
         len += write_uint(&mut buf[len..], IMAGE_BASE.load(Ordering::Acquire) as u64, 16);
+        len = append(&mut buf, len, b" hook=0x");
+        len += write_uint(&mut buf[len..], HOOK_BASE.load(Ordering::Acquire) as u64, 16);
 
         len = append(&mut buf, len, b" stack=");
         let mut frames: [*mut c_void; 32] = [core::ptr::null_mut(); 32];
@@ -349,9 +388,12 @@ mod crash {
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+    const ACCESS_VIOLATION: u32 = 0xC000_0005;
+
     static WRITE_HANDLE: AtomicUsize = AtomicUsize::new(0);
     static PREV_FILTER: AtomicUsize = AtomicUsize::new(0);
     static IMAGE_BASE: AtomicUsize = AtomicUsize::new(0);
+    static HOOK_BASE: AtomicUsize = AtomicUsize::new(0);
 
     type FilterFn = unsafe extern "system" fn(*const EXCEPTION_POINTERS) -> i32;
 
@@ -360,10 +402,20 @@ mod crash {
             return;
         }
         IMAGE_BASE.store(unsafe { GetModuleHandleW(core::ptr::null()) } as usize, Ordering::Release);
+        let name: Vec<u16> = "studio_hook.dll".encode_utf16().chain(core::iter::once(0)).collect();
+        let hook = unsafe { GetModuleHandleW(name.as_ptr()) } as usize;
+        if hook != 0 {
+            HOOK_BASE.store(hook, Ordering::Release);
+        }
         // Chain to whatever was already registered (Roblox's own crash handler)
         // so their reporting still runs after ours.
         let previous = unsafe { SetUnhandledExceptionFilter(Some(handler)) };
         PREV_FILTER.store(previous.map(|f| f as usize).unwrap_or(0), Ordering::Release);
+
+        super::report(&format!(
+            "crash handler armed - image=0x{:x} hook=0x{hook:x}",
+            IMAGE_BASE.load(Ordering::Acquire)
+        ));
     }
 
     fn spawn_helper(webhook: &str) -> bool {
@@ -390,21 +442,36 @@ mod crash {
     }
 
     unsafe extern "system" fn handler(info: *const EXCEPTION_POINTERS) -> i32 {
-        let (code, address) = unsafe {
-            info.as_ref()
-                .and_then(|p| p.ExceptionRecord.as_ref())
-                .map(|record| (record.ExceptionCode as u64, record.ExceptionAddress as usize))
-                .unwrap_or((0, 0))
-        };
+        let record = unsafe { info.as_ref().and_then(|p| p.ExceptionRecord.as_ref()) };
+        let code = record.map(|r| r.ExceptionCode as u32).unwrap_or(0);
+        let address = record.map(|r| r.ExceptionAddress as usize).unwrap_or(0);
 
         let mut buf = [0u8; 768];
         let mut len = 0;
         len = append(&mut buf, len, b"CRASH exception=0x");
-        len += write_uint(&mut buf[len..], code, 16);
+        len += write_uint(&mut buf[len..], code as u64, 16);
         len = append(&mut buf, len, b" addr=0x");
         len += write_uint(&mut buf[len..], address as u64, 16);
         len = append(&mut buf, len, b" base=0x");
         len += write_uint(&mut buf[len..], IMAGE_BASE.load(Ordering::Acquire) as u64, 16);
+        len = append(&mut buf, len, b" hook=0x");
+        len += write_uint(&mut buf[len..], HOOK_BASE.load(Ordering::Acquire) as u64, 16);
+
+        if code == ACCESS_VIOLATION {
+            if let Some(record) = record {
+                if record.NumberParameters >= 2 {
+                    len = append(&mut buf, len, b" access=");
+                    len = append(&mut buf, len, match record.ExceptionInformation[0] {
+                        0 => b"read".as_slice(),
+                        1 => b"write".as_slice(),
+                        8 => b"execute".as_slice(),
+                        _ => b"?".as_slice(),
+                    });
+                    len = append(&mut buf, len, b" fault=0x");
+                    len += write_uint(&mut buf[len..], record.ExceptionInformation[1] as u64, 16);
+                }
+            }
+        }
 
         len = append(&mut buf, len, b" stack=");
         let mut frames: [*mut c_void; 32] = [core::ptr::null_mut(); 32];

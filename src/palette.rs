@@ -113,9 +113,7 @@ fn build_source(colors: &HashMap<String, (u8, u8, u8)>) -> String {
 }
 
 fn compile_lua(source: &str) -> Result<Vec<u8>> {
-    mlua::chunk::Compiler::new()
-        .compile(source)
-        .map_err(|e: mlua::prelude::LuaError| anyhow::anyhow!("luau compile failed: {e}"))
+    crate::luau::compile(source).map_err(|e| anyhow::anyhow!("luau compile failed: {e}"))
 }
 
 pub fn plugins_dir(target: &Path) -> Result<PathBuf> {

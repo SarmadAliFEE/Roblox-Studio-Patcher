@@ -1,8 +1,49 @@
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
+fn cpp_sources(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else { return out };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("cpp") {
+            out.push(path);
+        }
+    }
+    out.sort();
+    out
+}
+
+fn build_luau_compiler() {
+    let luau = PathBuf::from("crates/studio-hook/vendor/luau");
+    println!("cargo:rerun-if-changed={}", luau.display());
+
+    let mut build = cc::Build::new();
+    build
+        .cpp(true)
+        .std("c++17")
+        .opt_level_str("s")
+        .warnings(false)
+        .define("LUACODE_API", "extern \"C\"")
+        .include(luau.join("Ast/include"))
+        .include(luau.join("Compiler/include"))
+        .include(luau.join("Common/include"))
+        .include(luau.join("Bytecode/include"));
+
+    for dir in ["Ast/src", "Compiler/src", "Common/src"] {
+        for file in cpp_sources(&luau.join(dir)) {
+            build.file(file);
+        }
+    }
+    build.file(luau.join("Bytecode/src/BytecodeBuilder.cpp"));
+
+    build.compile("luau_compiler");
+}
+
 fn main() {
+    build_luau_compiler();
+
     println!("cargo:rerun-if-changed=crates/studio-hook/src");
     println!("cargo:rerun-if-changed=crates/studio-hook/build.rs");
     println!("cargo:rerun-if-changed=crates/studio-hook/Cargo.toml");

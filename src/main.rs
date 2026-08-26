@@ -1,6 +1,7 @@
 mod binary;
 mod hooks;
 mod inject;
+mod luau;
 mod palette;
 mod rbxm;
 mod term;

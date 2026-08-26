@@ -49,52 +49,56 @@ pub fn find_matches(haystack: &[u8], pattern: &[PatByte]) -> Vec<usize> {
     hits
 }
 
-/// Finds the newest Roblox Studio install under %LOCALAPPDATA%\Roblox\Versions.
+/// Lists Roblox Studio installs under %LOCALAPPDATA%\Roblox\Versions, newest first.
 #[cfg(target_os = "windows")]
-pub fn discover_binary() -> Result<PathBuf> {
+pub fn discover_candidates() -> Result<Vec<PathBuf>> {
     let local = std::env::var_os("LOCALAPPDATA").context("no LOCALAPPDATA env var")?;
     let versions = PathBuf::from(local).join("Roblox").join("Versions");
-    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
     for entry in fs::read_dir(&versions).context("no roblox install found, pass --binary")? {
         let exe = entry?.path().join("RobloxStudioBeta.exe");
         if !exe.exists() {
             continue;
         }
         let mtime = fs::metadata(&exe)?.modified()?;
-        if newest.as_ref().is_none_or(|(t, _)| mtime > *t) {
-            newest = Some((mtime, exe));
-        }
+        found.push((mtime, exe));
     }
-    newest
-        .map(|(_, p)| p)
-        .context("no RobloxStudioBeta.exe under Roblox/Versions, pass --binary")
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    if found.is_empty() {
+        bail!("no RobloxStudioBeta.exe under Roblox/Versions, pass --binary");
+    }
+    Ok(found.into_iter().map(|(_, path)| path).collect())
 }
 
-/// Finds the Roblox Studio.app install in the usual mac locations.
+/// Lists Roblox Studio.app installs in the usual mac locations and via Spotlight.
 #[cfg(not(target_os = "windows"))]
-pub fn discover_binary() -> Result<PathBuf> {
-    for c in [
-        "/Applications/RobloxStudio.app",
-        "/Applications/Roblox Studio.app",
-    ] {
-        if PathBuf::from(c).exists() {
-            return Ok(PathBuf::from(c));
-        }
-    }
+pub fn discover_candidates() -> Result<Vec<PathBuf>> {
+    let mut candidates: Vec<PathBuf> = vec![
+        PathBuf::from("/Applications/RobloxStudio.app"),
+        PathBuf::from("/Applications/Roblox Studio.app"),
+    ];
     if let Some(home) = std::env::var_os("HOME") {
-        let p: PathBuf = PathBuf::from(home).join("Applications/RobloxStudio.app");
-        if p.exists() {
-            return Ok(p);
-        }
+        candidates.push(PathBuf::from(home).join("Applications/RobloxStudio.app"));
     }
     let out: std::process::Output = Command::new("mdfind")
         .arg("kMDItemCFBundleIdentifier == 'com.roblox.RobloxStudioBrowser'")
         .output()?;
-    let found: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stdout);
-    let first: Option<&str> = found.lines().next().filter(|s: &&str| !s.is_empty());
-    first
-        .map(PathBuf::from)
-        .context("couldn't find RobloxStudio.app, pass --binary")
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        if !line.is_empty() {
+            candidates.push(PathBuf::from(line));
+        }
+    }
+
+    let mut found: Vec<PathBuf> = Vec::new();
+    for candidate in candidates {
+        if candidate.exists() && !found.contains(&candidate) {
+            found.push(candidate);
+        }
+    }
+    if found.is_empty() {
+        bail!("couldn't find RobloxStudio.app, pass --binary");
+    }
+    Ok(found)
 }
 
 /// Resolves an .app bundle to its actual executable via CFBundleExecutable.

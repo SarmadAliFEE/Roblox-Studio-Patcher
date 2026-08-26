@@ -109,6 +109,48 @@ fn read_yn() -> bool {
     matches!(line.trim(), "y" | "Y" | "yes")
 }
 
+fn select_target() -> Result<PathBuf> {
+    let mut candidates: Vec<PathBuf> = binary::discover_candidates()?;
+    if candidates.len() == 1 {
+        return Ok(candidates.remove(0));
+    }
+
+    term::step("multiple roblox studio installs found");
+    for (index, candidate) in candidates.iter().enumerate() {
+        let tag = if index == 0 { term::dim(" (default)") } else { String::new() };
+        println!(
+            "    {} {}{}",
+            term::cyan(&format!("[{}]", index + 1)),
+            candidate.display(),
+            tag
+        );
+    }
+    let choice = ask_index(candidates.len());
+    Ok(candidates.remove(choice))
+}
+
+fn ask_index(count: usize) -> usize {
+    loop {
+        print!(
+            "    {} ",
+            term::dim(&format!("which build? [1-{count}, enter for 1]"))
+        );
+        let _ = io::stdout().flush();
+        let mut line: String = String::new();
+        io::stdin().read_line(&mut line).ok();
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return 0;
+        }
+        if let Ok(n) = trimmed.parse::<usize>() {
+            if (1..=count).contains(&n) {
+                return n - 1;
+            }
+        }
+        term::warn("enter a number from the list");
+    }
+}
+
 fn run_auto(target: &std::path::Path, macho_path: &std::path::Path, args: &Args) -> Result<()> {
     update::check_and_prompt();
 
@@ -204,11 +246,10 @@ fn run() -> Result<()> {
 
     term::banner();
 
-    let target: PathBuf = args
-        .binary
-        .clone()
-        .map(Ok)
-        .unwrap_or_else(binary::discover_binary)?;
+    let target: PathBuf = match args.binary.clone() {
+        Some(path) => path,
+        None => select_target()?,
+    };
     let macho_path: PathBuf = binary::resolve_macho(&target)?;
     println!("{} {}", term::dim("target"), term::cyan(&macho_path.display().to_string()));
 

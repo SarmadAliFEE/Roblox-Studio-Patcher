@@ -1,4 +1,7 @@
+//! Bindings to the vendored Luau compiler, shared by the CLI and the hook.
+
 use core::ffi::{c_char, c_void};
+use std::sync::Once;
 
 unsafe extern "C" {
     fn luau_compile(
@@ -24,6 +27,14 @@ unsafe extern "C" {
     static mut LUAU_BOOL_FLAGS: *mut FValueBool;
 }
 
+/// Turns on every `Luau*` boolean feature flag in the vendored compiler.
+///
+/// Idempotent, and returns how many flags the walk found.
+///
+/// # Examples
+/// ```
+/// assert!(luau_compile::enable_luau_flags() > 0);
+/// ```
 pub fn enable_luau_flags() -> usize {
     let mut enabled = 0;
     let mut node = unsafe { LUAU_BOOL_FLAGS };
@@ -41,12 +52,25 @@ pub fn enable_luau_flags() -> usize {
     enabled
 }
 
+/// Why a compile did not produce bytecode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompileError {
     Empty,
     Rejected(String),
 }
 
+impl core::fmt::Display for CompileError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            CompileError::Empty => write!(f, "compiler returned no bytecode"),
+            CompileError::Rejected(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl std::error::Error for CompileError {}
+
+/// Compiler output, freed on drop.
 pub struct Bytecode {
     ptr: *mut c_char,
     len: usize,
@@ -59,14 +83,20 @@ impl core::fmt::Debug for Bytecode {
 }
 
 impl Bytecode {
+    /// The compiled bytecode, starting with its version byte.
+    #[must_use]
     pub fn as_slice(&self) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self.ptr as *const u8, self.len) }
     }
 
+    /// Length in bytes.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.len
     }
 
+    /// True when the compiler produced nothing.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -80,7 +110,26 @@ impl Drop for Bytecode {
 
 unsafe impl Send for Bytecode {}
 
+/// Compiles Luau source to the bytecode version Studio accepts.
+///
+/// Feature flags are enabled once per process before the first compile.
+///
+/// # Errors
+/// Returns [`CompileError::Rejected`] with the compiler message when `source`
+/// does not parse, or [`CompileError::Empty`] when nothing is produced.
+///
+/// # Examples
+/// ```
+/// let bytecode = luau_compile::compile("return 1 + 1")?;
+/// assert_eq!(bytecode.as_slice()[0], 13);
+/// # Ok::<(), luau_compile::CompileError>(())
+/// ```
 pub fn compile(source: &str) -> Result<Bytecode, CompileError> {
+    static FLAGS: Once = Once::new();
+    FLAGS.call_once(|| {
+        enable_luau_flags();
+    });
+
     let mut len = 0usize;
     let ptr = unsafe {
         luau_compile(

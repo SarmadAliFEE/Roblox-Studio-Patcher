@@ -1,7 +1,7 @@
 use core::ffi::{c_char, c_void};
 
 use crate::mem;
-use crate::vm::luau::{self, CompileError};
+use luau_compile::{self as luau, CompileError};
 
 pub const CLOSURE_IS_C: usize = 0x3;
 pub const CLOSURE_PROTO: usize = 0x18;

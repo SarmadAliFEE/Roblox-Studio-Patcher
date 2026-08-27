@@ -92,4 +92,4 @@ DM [uwufuzzywiiiaisdd](https://discord.com/users/1382448091445203037) on discord
 
 ## license
 
-[PolyForm Noncommercial 1.0.0](LICENSE) - use, modify, and share it freely; just don't sell it. keep the credit to Adrian (uwufuzzywiiiaisddd).
+[MIT](LICENSE)

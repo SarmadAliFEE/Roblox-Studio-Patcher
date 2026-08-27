@@ -71,7 +71,7 @@ fn drive_idle() {
 }
 
 pub fn install() -> Result<usize, InstallError> {
-    let flags = crate::vm::luau::enable_luau_flags();
+    let flags = luau_compile::enable_luau_flags();
     crate::log(&format!("luau: enabled {flags} compiler flag(s)"));
 
     let resolved = resolve::resolve().map_err(InstallError::Resolve)?;

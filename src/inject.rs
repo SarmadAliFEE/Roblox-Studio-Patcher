@@ -389,3 +389,24 @@ pub fn inject_dylib(target_path: &Path, dylib_path: &str) -> Result<()> {
     }
     bail!("not an arm64 mach-o or a pe executable, can't inject");
 }
+
+/// ```ignore
+/// let hooked = is_injected(target, "/Users/Shared/rbx-theme-set/studio_hook.dylib")?;
+/// ```
+pub fn is_injected(target: &Path, library: &str) -> Result<bool> {
+    let data: Vec<u8> = fs::read(target)?;
+    if data.len() >= 4 && data[0..4] == [0xcf, 0xfa, 0xed, 0xfe] {
+        let sizeofcmds: u32 = u32::from_le_bytes(data[20..24].try_into().unwrap());
+        return Ok(dylib_paths(&data, sizeofcmds).iter().any(|p: &String| p == library));
+    }
+    if data.len() >= 2 && data[0..2] == *b"MZ" {
+        let layout: PeLayout = parse_pe_layout(&data)?;
+        let sections: Vec<Section> = read_sections(&data, &layout);
+        let name: &str = Path::new(library)
+            .file_name()
+            .and_then(|n: &std::ffi::OsStr| n.to_str())
+            .unwrap_or(library);
+        return dll_already_imported(&data, &layout, &sections, name);
+    }
+    bail!("not an arm64 mach-o or a pe executable")
+}

@@ -1,9 +1,9 @@
 mod binary;
 mod hooks;
 mod inject;
-mod luau;
 mod palette;
 mod rbxm;
+mod state;
 mod term;
 mod themes;
 mod update;
@@ -88,6 +88,14 @@ pub struct Args {
     /// Skip force-killing running studio processes before patching.
     #[arg(long)]
     no_kill_studio: bool,
+
+    /// Report what is installed for the target studio, then exit.
+    #[arg(long)]
+    status: bool,
+
+    /// Roll the target studio back to its newest backup, then exit.
+    #[arg(long)]
+    restore: bool,
 }
 
 /// Prompts `q [y/N]` on stdout and reads a yes/no answer from stdin.
@@ -152,8 +160,66 @@ fn ask_index(count: usize) -> usize {
     }
 }
 
+fn ask_choice(options: &[&str]) -> usize {
+    for (index, option) in options.iter().enumerate() {
+        println!("    {} {}", term::cyan(&format!("[{}]", index + 1)), option);
+    }
+    loop {
+        print!(
+            "    {} ",
+            term::dim(&format!("choose [1-{}, enter for 1]", options.len()))
+        );
+        let _ = io::stdout().flush();
+        let mut line: String = String::new();
+        io::stdin().read_line(&mut line).ok();
+        let trimmed: &str = line.trim();
+        if trimmed.is_empty() {
+            return 0;
+        }
+        if let Ok(n) = trimmed.parse::<usize>() {
+            if (1..=options.len()).contains(&n) {
+                return n - 1;
+            }
+        }
+        term::warn("enter a number from the list");
+    }
+}
+
 fn run_auto(target: &std::path::Path, macho_path: &std::path::Path, args: &Args) -> Result<()> {
     update::check_and_prompt();
+
+    if let Ok(installed) = state::inspect(macho_path) {
+        if installed.injected {
+            term::step("this studio is already set up");
+            term::detail(&installed.summary());
+            if !installed.is_healthy() {
+                term::warn("the payload is missing - studio may fail to launch until you re-apply");
+            }
+
+            match ask_choice(&[
+                "set up features again (re-applies everything you pick)",
+                "show what's installed",
+                "put studio back the way it was",
+                "quit",
+            ]) {
+                1 => {
+                    state::run_status(macho_path)?;
+                    println!();
+                    return Ok(());
+                }
+                2 => {
+                    state::run_restore(macho_path, args)?;
+                    println!();
+                    return Ok(());
+                }
+                3 => {
+                    println!();
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+    }
 
     let mut globals_args: Args = args.clone();
     globals_args.globals = vec!["auto".to_string()];
@@ -253,6 +319,15 @@ fn run() -> Result<()> {
     };
     let macho_path: PathBuf = binary::resolve_macho(&target)?;
     println!("{} {}", term::dim("target"), term::cyan(&macho_path.display().to_string()));
+
+    if args.status {
+        state::run_status(&macho_path)?;
+        return Ok(());
+    }
+    if args.restore {
+        state::run_restore(&macho_path, &args)?;
+        return Ok(());
+    }
 
     let mut did_something: bool = false;
     if args.discover {

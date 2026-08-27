@@ -2,6 +2,8 @@
 name = "studio-patcher"
 version = "0.7.1"
 edition = "2024"
+license = "PolyForm-Noncommercial-1.0.0"
+authors = ["Adrian (uwufuzzywiiiaisddd)"]
 
 [[bin]]
 name = "studio-patcher"

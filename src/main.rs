@@ -65,9 +65,9 @@ pub struct Args {
     #[arg(long)]
     discord: bool,
 
-    /// Report every error and crash to a discord webhook.
+    /// Write every error and crash to a local log file.
     #[arg(long)]
-    webhook_logging: bool,
+    crash_logging: bool,
 
     /// Print candidate globals/permission-check sites without patching.
     #[arg(long)]
@@ -281,11 +281,11 @@ fn run_auto(target: &std::path::Path, macho_path: &std::path::Path, args: &Args)
     }
 
     if ask_feature(
-        "enable webhook logging?",
-        "reports every error and crash to a discord webhook",
+        "enable crash logging?",
+        "writes every error and crash to a local log file",
     ) {
         match hooks::install_logger(macho_path, args) {
-            Ok(_) => term::ok("webhook logging installed"),
+            Ok(_) => term::ok("crash logging installed"),
             Err(e) => term::warn(&format!("hook install failed ({e})")),
         }
     }
@@ -366,7 +366,7 @@ fn run() -> Result<()> {
         hooks::install_studio_hook(&macho_path, &args)?;
         did_something = true;
     }
-    if args.webhook_logging {
+    if args.crash_logging {
         hooks::install_logger(&macho_path, &args)?;
         did_something = true;
     }

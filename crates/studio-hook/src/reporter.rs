@@ -1,60 +1,30 @@
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[cfg(target_os = "macos")]
 const CONFIG_PATH: &str = "/Users/Shared/rbx-theme-set/Logger.json";
 #[cfg(target_os = "windows")]
 const CONFIG_PATH: &str = r"C:\Users\Public\rbxthemeset\Logger.json";
 
-const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
-const MIN_POST_INTERVAL: Duration = Duration::from_millis(2000);
-const MAX_LOG: usize = 512 * 1024;
-const BOUNDARY: &str = "----studiohooklog7f3a2b";
-
-static SENDER: OnceLock<Sender<()>> = OnceLock::new();
-static LOG: Mutex<String> = Mutex::new(String::new());
-static MESSAGE_ID: Mutex<Option<String>> = Mutex::new(None);
-
+/// Installs local crash logging when `Logger.json` enables it.
+///
+/// Panics and fatal signals are appended to [`crate::crash_log_path`]; the
+/// handlers chain down to Roblox's own so its crash reporting still runs.
 pub fn init() {
-    let Some((enabled, webhook)) = load_config() else { return };
-    if !enabled || webhook.is_empty() {
+    if !enabled() {
         return;
     }
-
-    let (tx, rx) = mpsc::channel::<()>();
-    if SENDER.set(tx).is_err() {
-        return;
-    }
-    let hook = webhook.clone();
-    std::thread::spawn(move || pump(rx, hook));
-
     install_panic_hook();
-    // Install native crash handlers only after Studio has spun up its own, so ours
-    // sit on top and chain down to Roblox's crash handler rather than being replaced.
-    std::thread::spawn(move || {
+    crate::log(&format!("logger online - pid {} - {}", std::process::id(), os_line()));
+    std::thread::spawn(|| {
         std::thread::sleep(Duration::from_secs(6));
-        crash::install(webhook);
+        crash::install();
     });
-    report(&format!("logger online - pid {} - {}", std::process::id(), os_line()));
 }
 
-pub fn report(message: &str) {
-    {
-        let mut log = LOG.lock().unwrap_or_else(|p| p.into_inner());
-        log.push_str(message);
-        log.push('\n');
-        if log.len() > MAX_LOG {
-            let mut cut = log.len() - MAX_LOG;
-            while cut < log.len() && !log.is_char_boundary(cut) {
-                cut += 1;
-            }
-            log.drain(..cut);
-        }
-    }
-    if let Some(tx) = SENDER.get() {
-        let _ = tx.send(());
-    }
+fn enabled() -> bool {
+    let Ok(text) = std::fs::read_to_string(CONFIG_PATH) else { return false };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
+    json.get("enabled").and_then(serde_json::Value::as_bool).unwrap_or(false)
 }
 
 fn os_line() -> String {
@@ -100,102 +70,17 @@ fn windows_version() -> Option<String> {
     Some(line.to_owned())
 }
 
-fn load_config() -> Option<(bool, String)> {
-    let text = std::fs::read_to_string(CONFIG_PATH).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let enabled = json.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-    let webhook = json.get("webhook").and_then(|v| v.as_str()).unwrap_or_default().to_owned();
-    Some((enabled, webhook))
-}
-
 fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        report(&format!("PANIC: {info}"));
+        crate::log(&format!("panic: {info}"));
         previous(info);
     }));
-}
-
-fn pump(rx: Receiver<()>, webhook: String) {
-    let mut last_post = Instant::now() - MIN_POST_INTERVAL;
-    while rx.recv().is_ok() {
-        while rx.try_recv().is_ok() {}
-        let wait = MIN_POST_INTERVAL.saturating_sub(last_post.elapsed());
-        if !wait.is_zero() {
-            std::thread::sleep(wait);
-        }
-        while rx.try_recv().is_ok() {}
-        flush(&webhook);
-        last_post = Instant::now();
-    }
-}
-
-fn flush(webhook: &str) {
-    let content = {
-        let log = LOG.lock().unwrap_or_else(|p| p.into_inner());
-        if log.is_empty() {
-            return;
-        }
-        log.clone()
-    };
-    let existing = MESSAGE_ID.lock().unwrap_or_else(|p| p.into_inner()).clone();
-    let updated = match existing {
-        Some(id) => edit_log(webhook, &id, &content).or_else(|| create_log(webhook, &content)),
-        None => create_log(webhook, &content),
-    };
-    if let Some(id) = updated {
-        *MESSAGE_ID.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
-    }
-}
-
-fn create_log(webhook: &str, content: &str) -> Option<String> {
-    let response = multipart(&format!("{webhook}?wait=true"), "POST", content, None)?;
-    let json: serde_json::Value = serde_json::from_str(&response).ok()?;
-    json.get("id").and_then(|v| v.as_str()).map(|s| s.to_owned())
-}
-
-fn edit_log(webhook: &str, id: &str, content: &str) -> Option<String> {
-    multipart(&format!("{webhook}/messages/{id}"), "PATCH", content, Some("{\"attachments\":[]}"))?;
-    Some(id.to_owned())
-}
-
-fn multipart(url: &str, method: &str, file: &str, payload_json: Option<&str>) -> Option<String> {
-    let mut body: Vec<u8> = Vec::with_capacity(file.len() + 512);
-    if let Some(payload) = payload_json {
-        body.extend_from_slice(
-            format!(
-                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"payload_json\"\r\n\
-                 Content-Type: application/json\r\n\r\n{payload}\r\n"
-            )
-            .as_bytes(),
-        );
-    }
-    body.extend_from_slice(
-        format!(
-            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"files[0]\"; \
-             filename=\"studio-hook.log\"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"
-        )
-        .as_bytes(),
-    );
-    body.extend_from_slice(file.as_bytes());
-    body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
-
-    ureq::builder()
-        .timeout(HTTP_TIMEOUT)
-        .build()
-        .request(method, url)
-        .set("Content-Type", &format!("multipart/form-data; boundary={BOUNDARY}"))
-        .send_bytes(&body)
-        .ok()?
-        .into_string()
-        .ok()
 }
 
 #[cfg(unix)]
 mod crash {
     use core::ffi::c_void;
-    use std::os::fd::{FromRawFd, OwnedFd};
-    use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
     static WRITE_FD: AtomicI32 = AtomicI32::new(-1);
@@ -211,8 +96,8 @@ mod crash {
         fn backtrace(buffer: *mut *mut c_void, size: i32) -> i32;
     }
 
-    pub fn install(webhook: String) {
-        let Some(write_fd) = spawn_helper(&webhook) else { return };
+    pub fn install() {
+        let Some(write_fd) = open_crash_log() else { return };
         WRITE_FD.store(write_fd, Ordering::Release);
         // Main-executable base so backtrace addresses resolve to offsets.
         if let Some(image) = crate::platform::find_main_image() {
@@ -243,38 +128,27 @@ mod crash {
             }
         }
 
-        super::report(&format!(
-            "crash handler armed - image=0x{:x} hook=0x{:x}",
+        crate::log(&format!(
+            "crash handler armed - image=0x{:x} hook=0x{:x} -> {}",
             IMAGE_BASE.load(Ordering::Acquire),
-            HOOK_BASE.load(Ordering::Acquire)
+            HOOK_BASE.load(Ordering::Acquire),
+            crate::crash_log_path().display()
         ));
     }
 
-    fn spawn_helper(webhook: &str) -> Option<i32> {
-        let mut fds = [0i32; 2];
-        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-            return None;
-        }
-        let (read_fd, write_fd) = (fds[0], fds[1]);
-        let script = format!(
-            "while IFS= read -r line; do curl -s -m 10 -H 'Content-Type: application/json' \
-             --data-raw \"{{\\\"content\\\":\\\"$line\\\"}}\" '{webhook}' >/dev/null 2>&1; done"
-        );
-        let stdin = unsafe { OwnedFd::from_raw_fd(read_fd) };
-        let spawned = Command::new("sh")
-            .arg("-c")
-            .arg(&script)
-            .stdin(Stdio::from(stdin))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        match spawned {
-            Ok(_) => Some(write_fd),
-            Err(_) => {
-                unsafe { libc::close(write_fd) };
-                None
-            }
-        }
+    fn open_crash_log() -> Option<i32> {
+        use std::os::unix::ffi::OsStrExt;
+        let path = crate::crash_log_path();
+        let mut bytes = path.as_os_str().as_bytes().to_vec();
+        bytes.push(0);
+        let fd = unsafe {
+            libc::open(
+                bytes.as_ptr() as *const libc::c_char,
+                libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND,
+                0o644,
+            )
+        };
+        (fd >= 0).then_some(fd)
     }
 
     extern "C" fn handler(signal: i32, info: *mut libc::siginfo_t, ctx: *mut c_void) {
@@ -374,8 +248,6 @@ mod crash {
 mod crash {
     use core::ffi::c_void;
     use std::os::windows::io::IntoRawHandle;
-    use std::os::windows::process::CommandExt;
-    use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use windows_sys::Win32::Storage::FileSystem::WriteFile;
@@ -386,7 +258,6 @@ mod crash {
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Threading::Sleep;
 
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     const ACCESS_VIOLATION: u32 = 0xC000_0005;
 
@@ -397,8 +268,8 @@ mod crash {
 
     type FilterFn = unsafe extern "system" fn(*const EXCEPTION_POINTERS) -> i32;
 
-    pub fn install(webhook: String) {
-        if !spawn_helper(&webhook) {
+    pub fn install() {
+        if !open_crash_log() {
             return;
         }
         IMAGE_BASE.store(unsafe { GetModuleHandleW(core::ptr::null()) } as usize, Ordering::Release);
@@ -412,32 +283,22 @@ mod crash {
         let previous = unsafe { SetUnhandledExceptionFilter(Some(handler)) };
         PREV_FILTER.store(previous.map(|f| f as usize).unwrap_or(0), Ordering::Release);
 
-        super::report(&format!(
-            "crash handler armed - image=0x{:x} hook=0x{hook:x}",
-            IMAGE_BASE.load(Ordering::Acquire)
+        crate::log(&format!(
+            "crash handler armed - image=0x{:x} hook=0x{hook:x} -> {}",
+            IMAGE_BASE.load(Ordering::Acquire),
+            crate::crash_log_path().display()
         ));
     }
 
-    fn spawn_helper(webhook: &str) -> bool {
-        let script = format!(
-            "while($true){{ $l=[Console]::In.ReadLine(); if($l -eq $null){{break}}; \
-             try{{ Invoke-RestMethod -Uri '{webhook}' -Method Post -ContentType 'application/json' \
-             -Body ('{{\"content\":\"' + $l + '\"}}') }}catch{{}} }}"
-        );
-        let mut child = match Command::new("powershell")
-            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(_) => return false,
+    fn open_crash_log() -> bool {
+        let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(crate::crash_log_path())
+        else {
+            return false;
         };
-        let Some(stdin) = child.stdin.take() else { return false };
-        WRITE_HANDLE.store(stdin.into_raw_handle() as usize, Ordering::Release);
-        std::mem::forget(child);
+        WRITE_HANDLE.store(file.into_raw_handle() as usize, Ordering::Release);
         true
     }
 

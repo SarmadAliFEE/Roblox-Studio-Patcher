@@ -1,8 +1,8 @@
 # Roblox-Studio-Patcher
 
-![platform](https://img.shields.io/badge/platform-macOS%20%7C%20windows-blue) ![built in rust](https://img.shields.io/badge/built%20in-rust-orange) ![deps none](https://img.shields.io/badge/runtime%20deps-none-brightgreen)
+![platform](https://img.shields.io/badge/platform-macOS%20arm64%20%7C%20macOS%20x86__64%20%7C%20windows-blue) ![built in rust](https://img.shields.io/badge/built%20in-rust-orange) ![deps none](https://img.shields.io/badge/runtime%20deps-none-brightgreen)
 
-flips Studio's `HasInternalPermission` to always-true, plus a handful of optional native hooks. one binary, no install, nothing to compile. mac (arm64) + windows.
+flips Studio's `HasInternalPermission` to always-true, plus a handful of optional native hooks. one binary, no install, nothing to compile. mac (arm64 + intel) + windows.
 
 > [!NOTE]
 > it patches Studio's binary on disk. a Studio update replaces that binary, so rerun the tool after each update. the original is backed up as `.bak-<timestamp>` next to it either way.
@@ -28,12 +28,20 @@ on top of the permission patch, opt into any of:
 
 grab your build from [releases](https://github.com/uwufuzzywiiiaisddd/Roblox-Studio-Patcher/releases).
 
-**mac (arm64)**
+**mac (arm64 / apple silicon)**
 
 ```bash
 chmod +x Roblox-Studio-Patcher-mac-silicon
 ./Roblox-Studio-Patcher-mac-silicon                                    # patches /Applications/RobloxStudio.app
 ./Roblox-Studio-Patcher-mac-silicon --binary /path/to/RobloxStudio.app # or a custom path
+```
+
+**mac (x86_64 / intel)**
+
+```bash
+chmod +x Roblox-Studio-Patcher-mac-intel
+./Roblox-Studio-Patcher-mac-intel                                      # patches /Applications/RobloxStudio.app
+./Roblox-Studio-Patcher-mac-intel --binary /path/to/RobloxStudio.app   # or a custom path
 ```
 
 **windows**

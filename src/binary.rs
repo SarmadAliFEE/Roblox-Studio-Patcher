@@ -603,6 +603,136 @@ fn and_ldrb_globals(data: &[u8], slide: i64, fstart: usize, fend: usize) -> Vec<
     }
 }
 
+
+fn macho_is_x86_64(data: &[u8]) -> bool {
+    data.len() >= 8
+        && data[0..4] == [0xcf, 0xfa, 0xed, 0xfe]
+        && u32::from_le_bytes(data[4..8].try_into().unwrap()) == 0x0100_0007
+}
+
+fn run_globals_macho_x86(macho_path: &Path, data: &mut [u8], args: &Args) -> Result<()> {
+    let (vmaddr, fileoff, vmsize) = text_bounds(data)?;
+    let slide: i64 = vmaddr as i64 - fileoff as i64;
+    let start: usize = fileoff as usize;
+    let end: usize = ((fileoff + vmsize) as usize).min(data.len());
+
+    let getter: usize = find_internal_permission_getter(data, start, end)
+        .context("couldn't find hasInternalPermission getter - roblox may have changed it")?;
+    let flag_a: u64 = ((getter + 10) as i64
+        + slide
+        + i32::from_le_bytes(data[getter + 6..getter + 10].try_into().unwrap()) as i64)
+        as u64;
+    let flag_b: u64 = ((getter + 16) as i64
+        + slide
+        + i32::from_le_bytes(data[getter + 12..getter + 16].try_into().unwrap()) as i64)
+        as u64;
+    let delta: i32 = (flag_a as i64 - flag_b as i64) as i32;
+
+    let sites: Vec<usize> = flag_read_sites(data, start, end, slide, flag_b);
+    if sites.is_empty() {
+        bail!("found the getter but no flag reads to redirect - roblox may have changed this");
+    }
+
+    let getter_addr: u64 = getter as u64 + (vmaddr - fileoff);
+    println!("hasInternalPermission at 0x{getter_addr:x} (flagA=0x{flag_a:x} flagB=0x{flag_b:x})");
+    println!("{} flag read(s) redirected to the always-on flag", sites.len());
+
+    if args.dry_run {
+        println!("dry run");
+        return Ok(());
+    }
+    kill_running_studio(macho_path, args)?;
+    if !args.no_backup {
+        backup(macho_path)?;
+    }
+    for &disp_off in &sites {
+        let disp: i32 = i32::from_le_bytes(data[disp_off..disp_off + 4].try_into().unwrap());
+        data[disp_off..disp_off + 4].copy_from_slice(&disp.wrapping_add(delta).to_le_bytes());
+    }
+    fs::write(macho_path, &data[..])?;
+    println!("patched internal permission ({} site(s))", sites.len());
+    if !args.no_resign {
+        resign(macho_path)?;
+    }
+    Ok(())
+}
+
+fn flag_read_sites(data: &[u8], start: usize, end: usize, slide: i64, flag: u64) -> Vec<usize> {
+    let mut sites: Vec<usize> = vec![];
+    let mut i: usize = start;
+    while i + 8 <= end {
+        let (prefix, has_imm, ok_reg): (usize, usize, bool) = match data[i] {
+            0x0f if matches!(data.get(i + 1), Some(0xb6 | 0xb7)) => (2, 0, true),
+            0x8a | 0x8b | 0x3a | 0x38 | 0x84 | 0x22 | 0x0a => (1, 0, true),
+            0x80 => (1, 1, (data[i + 1] >> 3) & 7 == 7),
+            0xf6 => (1, 1, matches!((data[i + 1] >> 3) & 7, 0 | 1)),
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        let modrm: u8 = data[i + prefix];
+        if ok_reg && modrm & 0xc7 == 0x05 {
+            let disp_off: usize = i + prefix + 1;
+            let disp: i32 = i32::from_le_bytes(data[disp_off..disp_off + 4].try_into().unwrap());
+            let next: usize = disp_off + 4 + has_imm;
+            if (next as i64 + slide + disp as i64) as u64 == flag {
+                sites.push(disp_off);
+                i = next;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    sites
+}
+
+fn find_internal_permission_getter(data: &[u8], start: usize, end: usize) -> Option<usize> {
+    let (vmaddr, fileoff, _) = text_bounds(data).ok()?;
+    let slide: i64 = vmaddr as i64 - fileoff as i64;
+    let granted: std::collections::HashSet<u64> = grant_set_flags(data, start, end, slide);
+
+    let mut i: usize = start;
+    while i + 16 <= end {
+        if data[i] == 0x55
+            && data[i + 1] == 0x48
+            && data[i + 2] == 0x89
+            && data[i + 3] == 0xe5
+            && data[i + 4] == 0x8a
+            && data[i + 5] == 0x05
+            && data[i + 10] == 0x22
+            && data[i + 11] == 0x05
+        {
+            let flag_b_disp: i32 =
+                i32::from_le_bytes(data[i + 12..i + 16].try_into().unwrap());
+            let flag_b: u64 = ((i + 16) as i64 + slide + flag_b_disp as i64) as u64;
+            if granted.contains(&flag_b) {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn grant_set_flags(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    slide: i64,
+) -> std::collections::HashSet<u64> {
+    let mut flags: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut i: usize = start;
+    while i + 7 <= end {
+        if data[i] == 0xc6 && data[i + 1] == 0x05 && data[i + 6] == 0x01 {
+            let disp: i32 = i32::from_le_bytes(data[i + 2..i + 6].try_into().unwrap());
+            flags.insert(((i + 7) as i64 + slide + disp as i64) as u64);
+        }
+        i += 1;
+    }
+    flags
+}
+
 fn discover_via_anchor(data: &[u8], anchor: &str) -> Result<Vec<u64>> {
     let (vmaddr, fileoff, vmsize) = text_bounds(data)?;
     let slide: i64 = vmaddr as i64 - fileoff as i64;
@@ -822,6 +952,9 @@ pub fn run_globals(macho_path: &Path, args: &Args) -> Result<()> {
 
     if is_pe(&data) {
         return run_globals_pe(macho_path, &mut data, args);
+    }
+    if macho_is_x86_64(&data) {
+        return run_globals_macho_x86(macho_path, &mut data, args);
     }
 
     let globals: Vec<u64> = if args.globals.len() == 1 && args.globals[0] == "auto" {

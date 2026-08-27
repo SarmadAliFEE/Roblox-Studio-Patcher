@@ -18,15 +18,28 @@ pub(crate) fn guard<T>(what: &str, body: impl FnOnce() -> T) -> Option<T> {
     }
 }
 
+/// Directory the hook writes its log and crash reports into.
+pub fn log_dir() -> std::path::PathBuf {
+    if cfg!(target_os = "windows") {
+        std::env::temp_dir()
+    } else {
+        std::path::PathBuf::from("/tmp")
+    }
+}
+
+/// Path of the running log.
+pub fn log_path() -> std::path::PathBuf {
+    log_dir().join("studio_patcher_hook.txt")
+}
+
+/// Path crash reports are appended to.
+pub fn crash_log_path() -> std::path::PathBuf {
+    log_dir().join("studio_patcher_crash.txt")
+}
+
 pub(crate) fn log(message: &str) {
     use std::io::Write;
-    reporter::report(message);
-    let path = if cfg!(target_os = "windows") {
-        std::env::temp_dir().join("studio_patcher_hook.txt")
-    } else {
-        std::path::PathBuf::from("/tmp/studio_patcher_hook.txt")
-    };
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(log_path()) {
         let _ = writeln!(file, "{message}");
     }
 }

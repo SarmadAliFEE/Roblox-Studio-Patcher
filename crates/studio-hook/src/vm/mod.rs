@@ -14,9 +14,9 @@ pub const L_EXTRA_SPACE: usize = 0x78;
 pub const GLOBAL_DEPTH: usize = 0x4980;
 pub const EXTRA_SPACE_SHARED: usize = 0x18;
 pub const SHARED_CONTEXT: usize = 0x18;
-#[cfg(target_arch = "aarch64")]
+#[cfg(target_os = "macos")]
 pub const DATAMODEL_GAME_STATE_TYPE: usize = 0x4f0;
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(target_os = "macos"))]
 pub const DATAMODEL_GAME_STATE_TYPE: usize = 0x520;
 pub const GAME_STATE_EDIT: i32 = 0;
 pub const GAME_STATE_EMPTY: i32 = 3;
@@ -169,13 +169,13 @@ pub fn find_lua_state_near(root: usize, fields: usize, cursor: &mut Cursor) -> O
 
 pub const SC_VM_COLLECTION_FACET: usize = 0x130;
 pub const VM_COLLECTION_FIRST_VM: usize = 0xd8;
-#[cfg(target_arch = "aarch64")]
+#[cfg(target_os = "macos")]
 pub const VM_STRIDE: usize = 0x290;
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(target_os = "macos"))]
 pub const VM_STRIDE: usize = 0x2a8;
-#[cfg(target_arch = "aarch64")]
+#[cfg(target_os = "macos")]
 pub const VM_LUA_STATE: usize = 0x258;
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(target_os = "macos"))]
 pub const VM_LUA_STATE: usize = 0x2c0;
 pub const VM_CLASS_COUNT: usize = 3;
 

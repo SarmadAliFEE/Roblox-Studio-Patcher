@@ -1,16 +1,16 @@
 //! Bindings to the vendored Luau compiler, shared by the CLI and the hook.
 
 use core::ffi::{c_char, c_void};
-use std::sync::Once;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 unsafe extern "C" {
-    fn luau_compile(
+    unsafe fn luau_compile(
         source: *const c_char,
         size: usize,
         options: *mut c_void,
         outsize: *mut usize,
     ) -> *mut c_char;
-    fn free(ptr: *mut c_void);
+    unsafe fn free(ptr: *mut c_void);
 }
 
 #[repr(C)]
@@ -24,7 +24,7 @@ struct FValueBool {
 
 unsafe extern "C" {
     #[link_name = "_ZN4Luau6FValueIbE4listE"]
-    static mut LUAU_BOOL_FLAGS: *mut FValueBool;
+    unsafe static mut LUAU_BOOL_FLAGS: *mut FValueBool;
 }
 
 /// Turns on every `Luau*` boolean feature flag in the vendored compiler.
@@ -36,12 +36,12 @@ unsafe extern "C" {
 /// assert!(luau_compile::enable_luau_flags() > 0);
 /// ```
 pub fn enable_luau_flags() -> usize {
-    let mut enabled = 0;
-    let mut node = unsafe { LUAU_BOOL_FLAGS };
+    let mut enabled: usize = 0;
+    let mut node: *mut FValueBool = unsafe { LUAU_BOOL_FLAGS };
     while !node.is_null() {
-        let name = unsafe { (*node).name };
+        let name: *const i8 = unsafe { (*node).name };
         if !name.is_null() {
-            let name = unsafe { core::ffi::CStr::from_ptr(name) };
+            let name: &std::ffi::CStr = unsafe { core::ffi::CStr::from_ptr(name) };
             if name.to_bytes().starts_with(b"Luau") {
                 unsafe { (*node).value = true };
                 enabled += 1;
@@ -125,13 +125,13 @@ unsafe impl Send for Bytecode {}
 /// # Ok::<(), luau_compile::CompileError>(())
 /// ```
 pub fn compile(source: &str) -> Result<Bytecode, CompileError> {
-    static FLAGS: Once = Once::new();
-    FLAGS.call_once(|| {
-        enable_luau_flags();
-    });
+    static FLAGS_READY: AtomicBool = AtomicBool::new(false);
+    if !FLAGS_READY.load(Ordering::Relaxed) && enable_luau_flags() > 0 {
+        FLAGS_READY.store(true, Ordering::Relaxed);
+    }
 
-    let mut len = 0usize;
-    let ptr = unsafe {
+    let mut len: usize = 0usize;
+    let ptr: *mut i8 = unsafe {
         luau_compile(
             source.as_ptr() as *const c_char,
             source.len(),
@@ -146,12 +146,12 @@ pub fn compile(source: &str) -> Result<Bytecode, CompileError> {
         return Err(CompileError::Empty);
     }
 
-    let bytecode = Bytecode { ptr, len };
-    let bytes = bytecode.as_slice();
+    let bytecode: Bytecode = Bytecode { ptr, len };
+    let bytes: &[u8] = bytecode.as_slice();
     if bytes[0] == 0 {
-        let message = core::ffi::CStr::from_bytes_until_nul(&bytes[1..])
+        let message: String = core::ffi::CStr::from_bytes_until_nul(&bytes[1..])
             .ok()
-            .and_then(|c| c.to_str().ok())
+            .and_then(|c: &std::ffi::CStr| c.to_str().ok())
             .unwrap_or("unknown compile error")
             .to_owned();
         return Err(CompileError::Rejected(message));
@@ -165,10 +165,10 @@ mod tests {
 
     #[test]
     fn flag_list_is_walkable_and_flags_change_the_output() {
-        let before = compile("return 1 + 1").expect("compiles").as_slice().to_vec();
-        let enabled = enable_luau_flags();
+        let before: Vec<u8> = compile("return 1 + 1").expect("compiles").as_slice().to_vec();
+        let enabled: usize = enable_luau_flags();
         assert!(enabled > 0, "expected to find Luau* flags in the vendored compiler");
-        let after = compile("return 1 + 1").expect("compiles").as_slice().to_vec();
+        let after: Vec<u8> = compile("return 1 + 1").expect("compiles").as_slice().to_vec();
         assert_eq!(after[0], 13);
         let _ = before;
     }
@@ -176,14 +176,14 @@ mod tests {
     #[test]
     fn compiles_valid_source_to_versioned_bytecode() {
         enable_luau_flags();
-        let bytecode = compile("return 1 + 1").expect("valid source compiles");
+        let bytecode: Bytecode = compile("return 1 + 1").expect("valid source compiles");
         assert!(!bytecode.is_empty());
         assert_eq!(bytecode.as_slice()[0], 13, "must emit the bytecode version Studio accepts");
     }
 
     #[test]
     fn reports_a_syntax_error_instead_of_emitting_bytecode() {
-        let err = compile("this is not lua ((").unwrap_err();
+        let err: CompileError = compile("this is not lua ((").unwrap_err();
         match err {
             CompileError::Rejected(message) => assert!(!message.is_empty()),
             other => panic!("expected a rejection, got {other:?}"),
@@ -193,14 +193,14 @@ mod tests {
     #[test]
     fn compiles_the_kind_of_script_the_hook_actually_runs() {
         enable_luau_flags();
-        let source = r#"
+        let source: &str = r#"
             local placeId = tostring(game.PlaceId)
             local ok, active = pcall(function()
                 return game:GetService("StudioService").ActiveScript
             end)
             return placeId .. "\t" .. tostring(ok and active ~= nil)
         "#;
-        let bytecode = compile(source).expect("poll script compiles");
+        let bytecode: Bytecode = compile(source).expect("poll script compiles");
         assert_eq!(bytecode.as_slice()[0], 13);
     }
 }

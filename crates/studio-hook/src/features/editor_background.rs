@@ -344,9 +344,20 @@ mod imp {
         }
         unsafe {
             let bytes = page as *mut u8;
-            core::ptr::write(bytes as *mut u32, 0x5800_0051); // ldr x17, #8
-            core::ptr::write(bytes.add(4) as *mut u32, 0xd61f_0220); // br x17
-            core::ptr::write(bytes.add(8) as *mut usize, target);
+            #[cfg(target_arch = "aarch64")]
+            {
+                core::ptr::write(bytes as *mut u32, 0x5800_0051);
+                core::ptr::write(bytes.add(4) as *mut u32, 0xd61f_0220);
+                core::ptr::write(bytes.add(8) as *mut usize, target);
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                core::ptr::write(bytes, 0x48);
+                core::ptr::write(bytes.add(1), 0xb8);
+                core::ptr::write_unaligned(bytes.add(2) as *mut usize, target);
+                core::ptr::write(bytes.add(10), 0xff);
+                core::ptr::write(bytes.add(11), 0xe0);
+            }
             libc::mprotect(page, page_size, libc::PROT_READ | libc::PROT_EXEC);
         }
         Some(page as usize)

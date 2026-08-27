@@ -11,10 +11,10 @@ const STUDIO_HOOK_PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/stu
 
 #[cfg(not(target_os = "windows"))]
 fn install_payload(macho_path: &Path, args: &Args) -> Result<()> {
-    use crate::{binary, inject, themes};
+    use crate::{binary, inject, state, themes};
 
     std::fs::create_dir_all(themes::THEMES_DIR)?;
-    let dylib_path: std::path::PathBuf = Path::new(themes::THEMES_DIR).join("studio_hook.dylib");
+    let dylib_path: std::path::PathBuf = Path::new(themes::THEMES_DIR).join(state::PAYLOAD_NAME);
     std::fs::write(&dylib_path, STUDIO_HOOK_PAYLOAD)?;
 
     binary::kill_running_studio(macho_path, args)?;
@@ -76,16 +76,25 @@ pub fn install_window_transparency(target: &Path, args: &Args) -> Result<()> {
 }
 
 /// please dont flood my shit bruh
-const CRASH_WEBHOOK: &str = "https://discord.com/api/webhooks/1437424303531491328/47WO1TR8qWBYi1ulX3iFUAu_CM-B6iJbG0JOyzCY0JU6PeQK_xVhUZkESGHeaoZWMrXa";
-
-/// Injects the payload and turns on webhook logging of every error and crash.
+/// Injects the payload and turns on local crash logging.
+///
+/// # Errors
+/// Returns an error if the config cannot be written or the payload cannot be
+/// installed.
 pub fn install_logger(target: &Path, args: &Args) -> Result<()> {
     std::fs::create_dir_all(crate::themes::THEMES_DIR)?;
-    let config: String =
-        format!("{{\n    \"enabled\": true,\n    \"webhook\": \"{CRASH_WEBHOOK}\"\n}}\n");
     let logger_path: std::path::PathBuf = Path::new(crate::themes::THEMES_DIR).join("Logger.json");
-    std::fs::write(&logger_path, config)?;
+    std::fs::write(&logger_path, "{\n    \"enabled\": true\n}\n")?;
     install_payload(target, args)?;
-    println!("webhook logging installed - every error and crash reports to discord (edit {})", logger_path.display());
+    println!("crash logging installed - errors and crashes are written to {}", crash_log_hint());
     Ok(())
+}
+
+fn crash_log_hint() -> String {
+    let dir = if cfg!(target_os = "windows") {
+        std::env::temp_dir()
+    } else {
+        std::path::PathBuf::from("/tmp")
+    };
+    dir.join("studio_patcher_crash.txt").display().to_string()
 }

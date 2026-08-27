@@ -14,8 +14,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: studio-hook tests
         run: cargo test --release --manifest-path crates/studio-hook/Cargo.toml
-      - name: build cli (macos)
+      - name: build cli (macos arm64)
         run: cargo build
+      - name: add intel target
+        run: rustup target add x86_64-apple-darwin
+      - name: check macos intel target
+        run: cargo check --release --target x86_64-apple-darwin --manifest-path crates/studio-hook/Cargo.toml
 
   windows-check:
     runs-on: ubuntu-latest

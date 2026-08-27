@@ -1,4 +1,4 @@
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod arch {
     pub const STEP: &str = concat!(
         "ff 43 03 d1 f6 57 0a a9 f4 4f 0b a9 fd 7b 0c a9 ",
@@ -49,7 +49,7 @@ mod arch {
     pub const CAN_ACCESS_RESTRICTED_BL: usize = 0x18;
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod arch {
     pub const STEP: &str = concat!(
         "48 89 5c 24 10 48 89 74 24 18 55 57 41 56 48 8d ",
@@ -84,6 +84,43 @@ mod arch {
         "48 89 43 28 48 c7 43 30 00 00 00 00 0f b6 43 28",
     );
     pub const CAN_ACCESS_RESTRICTED_BL: usize = 0x5;
+}
+
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+mod arch {
+    pub const STEP: &str = concat!(
+        "55 48 89 e5 41 57 41 56 41 54 53 48 81 ec a0 00 ",
+        "00 00 48 89 f3 49 89 fe 80 bf 80 01 00 00 00 75 ",
+        "1b 49 8b 86 88 01 00 00",
+    );
+
+    pub const LUAU_LOAD_WRAPPER: &str = concat!(
+        "55 48 89 e5 41 57 41 56 41 55 41 54 53 48 83 ec ",
+        "58 49 89 d5 49 89 f7 48 89 fb 4c 8b 67 30 49 8b ",
+        "44 24 50 49 39 44 24 58 72 22 48 89 df",
+    );
+
+    pub const CALL_DISPATCH: &str = concat!(
+        "55 48 89 e5 41 57 41 56 53 50 41 89 d6 48 89 fb ",
+        "e8 ?? ?? ?? ?? 41 89 c7 85 c0 75 52 48 8b 43 30 ",
+        "48 8b 80 28 05 00 00 48 85 c0",
+    );
+
+    pub const TASK_DEFER: &str = "";
+
+    pub const LUA_NEWTHREAD: &str = concat!(
+        "55 48 89 e5 41 56 53 48 89 fb 48 8b 47 30 48 8b ",
+        "48 58 48 3b 48 50 72 0d 48 89 df be 01 00 00 00 ",
+        "e8 ?? ?? ?? ?? f6 43 01 04",
+    );
+
+    pub const CAN_ACCESS_RESTRICTED: &str = concat!(
+        "48 89 e5 41 57 41 56 53 50 49 89 fe 4c 8b 7f 18 ",
+        "e8 ?? ?? ?? ?? 48 89 c3 45 0f b6 bf 90 01 00 00 ",
+        "4d 85 ff 74 29 48 8b 43 28 48 8b 4b 30",
+    );
+
+    pub const CAN_ACCESS_RESTRICTED_BL: usize = 0x10;
 }
 
 pub use arch::*;

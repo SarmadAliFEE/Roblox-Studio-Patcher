@@ -36,6 +36,7 @@ unsafe extern "C" fn hooked_step(job: *mut c_void, stats: *mut c_void) -> *mut c
 enum Action {
     Poll(Ready, bool),
     Idle,
+    Hold,
 }
 
 fn observe(job: usize) {
@@ -45,13 +46,15 @@ fn observe(job: usize) {
         let Some(discovery) = slot.as_mut() else { return };
         discovery.on_step(job, now);
         match discovery.edit(now) {
-            Some(ready) => Action::Poll(ready, discovery.play_test_active(now)),
+            Some(ready) if ready.job == job => Action::Poll(ready, discovery.play_test_active(now)),
+            Some(_) => Action::Hold,
             None => Action::Idle,
         }
     };
     match action {
         Action::Poll(ready, play_test) => drive_presence(ready, play_test),
         Action::Idle => drive_idle(),
+        Action::Hold => {}
     }
 }
 

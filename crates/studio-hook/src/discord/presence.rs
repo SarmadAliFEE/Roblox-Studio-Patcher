@@ -12,19 +12,6 @@ local place = tostring(game.PlaceId)
 local universe = tostring(game.GameId)
 
 local name = game.Name
-pcall(function()
-    if __rpcNameFor ~= place then
-        __rpcNameFor = place
-        __rpcName = nil
-        task.spawn(function()
-            local ok, info = pcall(function()
-                return game:GetService("MarketplaceService"):GetProductInfoAsync(game.PlaceId)
-            end)
-            if ok and info and info.Name then __rpcName = info.Name end
-        end)
-    end
-    if __rpcName then name = __rpcName end
-end)
 
 local scriptName, scriptClass, line, char = "", "", "", ""
 
@@ -184,8 +171,11 @@ impl Presence {
         }
         self.zero_place_streak = 0;
 
-        let resolved = place::get(&poll.universe_id);
-        let details = if poll.place_name.is_empty() {
+        let resolved = place::get(&poll.universe_id, &poll.place_id);
+        let resolved_name = resolved.as_ref().map(|r| r.name.clone()).unwrap_or_default();
+        let details = if !resolved_name.is_empty() {
+            resolved_name
+        } else if poll.place_name.is_empty() {
             format!("Place {}", poll.place_id)
         } else {
             poll.place_name.clone()

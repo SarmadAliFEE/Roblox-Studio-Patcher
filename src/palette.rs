@@ -59,7 +59,7 @@ const TARGETS: &[Target] = &[
 ];
 
 fn hex_to_rgb(hex: &str) -> Result<(u8, u8, u8)> {
-    let h = hex.trim_start_matches('#');
+    let h: &str = hex.trim_start_matches('#');
     if h.len() != 6 {
         bail!("bad hex color {hex:?}, need #RRGGBB");
     }
@@ -114,13 +114,18 @@ fn build_source(colors: &HashMap<String, (u8, u8, u8)>) -> String {
 
 fn compile_lua(source: &str) -> Result<Vec<u8>> {
     luau_compile::compile(source)
-        .map(|bytecode| bytecode.as_slice().to_vec())
-        .map_err(|e| anyhow::anyhow!("luau compile failed: {e}"))
+        .map(|bytecode: luau_compile::Bytecode| bytecode.as_slice().to_vec())
+        .map_err(|e: luau_compile::CompileError| anyhow::anyhow!("luau compile failed: {e}"))
 }
 
 pub fn plugins_dir(target: &Path) -> Result<PathBuf> {
-    let candidates: Vec<PathBuf> = if target.extension().and_then(|e| e.to_str()) == Some("app") {
-        vec![target.join("Contents/Resources/BuiltInStandalonePlugins/Optimized_Embedded_Signature")]
+    let bundle: Option<PathBuf> = if target.extension().and_then(|e: &std::ffi::OsStr| e.to_str()) == Some("app") {
+        Some(target.to_path_buf())
+    } else {
+        crate::binary::app_root(target)
+    };
+    let candidates: Vec<PathBuf> = if let Some(bundle) = bundle {
+        vec![bundle.join("Contents/Resources/BuiltInStandalonePlugins/Optimized_Embedded_Signature")]
     } else {
         let version_dir: &Path = target.parent().context("binary has no parent dir")?;
         vec![

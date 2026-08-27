@@ -7,9 +7,11 @@ use anyhow::{bail, Context, Result};
 use crate::{binary, inject, term, themes, Args};
 
 #[cfg(target_os = "windows")]
-const PAYLOAD_NAME: &str = "studio_hook.dll";
-#[cfg(not(target_os = "windows"))]
-const PAYLOAD_NAME: &str = "studio_hook.dylib";
+pub const PAYLOAD_NAME: &str = "studio_hook.dll";
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub const PAYLOAD_NAME: &str = "studio_hook.dylib";
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+pub const PAYLOAD_NAME: &str = "studio_hook_x86_64.dylib";
 
 const BACKUP_PREFIX: &str = "bak-";
 

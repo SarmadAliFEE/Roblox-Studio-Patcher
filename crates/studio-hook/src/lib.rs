@@ -45,6 +45,8 @@ pub(crate) fn log(message: &str) {
 }
 
 fn on_loaded() {
+    let version: String = platform::studio_version().unwrap_or_else(|| "unknown".into());
+    log(&format!("studio-hook loaded - studio {version}"));
     guard("reporter", reporter::init);
     guard("features", features::init);
     std::thread::spawn(|| {

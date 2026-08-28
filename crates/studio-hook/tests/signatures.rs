@@ -1,14 +1,7 @@
 use studio_hook::scan::Pattern;
+use studio_hook::vm::signatures::STEP as STEP_SIGNATURE;
 
 const STUDIO_BINARY: &str = "/Applications/RobloxStudio.app/Contents/MacOS/RobloxStudio";
-
-const STEP_SIGNATURE: &str = concat!(
-    "ff 43 03 d1 f6 57 0a a9 f4 4f 0b a9 fd 7b 0c a9 ",
-    "fd 03 03 91 f3 03 01 aa f4 03 00 aa 08 00 46 39 ",
-    "a8 00 00 37 88 c6 40 f9 08 01 1b 91 08 fd df 08 ",
-    "?? ?? ?? ?? 80 c6 40 f9 a8 03 01 d1 ",
-    "?? ?? ?? ?? ?? ?? ?? ??",
-);
 
 const LC_SEGMENT_64: u32 = 0x19;
 const MH_MAGIC_64: u32 = 0xfeed_facf;

@@ -7,6 +7,7 @@ use crate::discord::presence::Presence;
 use crate::platform;
 use crate::vm::discovery::{Discovery, Ready, Vtables};
 use crate::vm::exec::Primitives;
+use crate::vm::layout::LuaProbe;
 use crate::vm::resolve::{self, ResolveError};
 
 type StepFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void;
@@ -59,11 +60,21 @@ fn observe(job: usize) {
 }
 
 fn drive_presence(ready: Ready, play_test: bool) {
-    let Ok(mut presence_slot) = PRESENCE.try_lock() else { return };
-    let Some(presence) = presence_slot.as_mut() else { return };
-    let Ok(primitives_slot) = PRIMITIVES.try_lock() else { return };
-    let Some(primitives) = primitives_slot.as_ref() else { return };
-    presence.on_tick(ready.lua_state, primitives, play_test);
+    let keep = {
+        let Ok(mut presence_slot) = PRESENCE.try_lock() else { return };
+        let Some(presence) = presence_slot.as_mut() else { return };
+        let Ok(primitives_slot) = PRIMITIVES.try_lock() else { return };
+        let Some(primitives) = primitives_slot.as_ref() else { return };
+        crate::vm::liveeval::tick(ready.lua_state, primitives);
+        presence.on_tick(ready.lua_state, primitives, play_test)
+    };
+    if keep {
+        return;
+    }
+    let Ok(mut slot) = DISCOVERY.try_lock() else { return };
+    if let Some(discovery) = slot.as_mut() {
+        discovery.mark_placeless(ready.lua_state);
+    }
 }
 
 fn drive_idle() {
@@ -94,14 +105,29 @@ pub fn install() -> Result<usize, InstallError> {
         script_context,
         waiting_hybrid: resolved.waiting_hybrid_vtable,
     };
-    *DISCOVERY.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(Discovery::new(vtables));
 
-    if let (Some(load), Some(call)) = (resolved.luau_load, resolved.call_dispatch) {
+    let probe = resolved.call_dispatch.and_then(LuaProbe::from_call_dispatch);
+    match probe {
+        Some(probe) => crate::log(&format!(
+            "layout: lua_State global=+{:#x} top=+{:#x} (read from call_dispatch)",
+            probe.global, probe.top
+        )),
+        None => crate::log("layout: lua_State offsets unreadable, presence disabled"),
+    }
+    if let Some(probe) = probe {
+        *DISCOVERY.lock().unwrap_or_else(|poison| poison.into_inner()) =
+            Some(Discovery::new(vtables, probe));
+    }
+
+    if let (Some(load), Some(call), Some(probe)) =
+        (resolved.luau_load, resolved.call_dispatch, probe)
+    {
         *PRIMITIVES.lock().unwrap_or_else(|p| p.into_inner()) = Some(Primitives {
             load,
             call,
             new_thread: resolved.lua_newthread,
             security_context_current: resolved.security_context_current,
+            lua_top: probe.top,
         });
         *PRESENCE.lock().unwrap_or_else(|p| p.into_inner()) = crate::discord::start();
     } else {

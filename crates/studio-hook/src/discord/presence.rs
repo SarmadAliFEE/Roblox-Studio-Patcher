@@ -10,11 +10,9 @@ const ZERO_PLACE_DEBOUNCE: u32 = 2;
 const POLL_SCRIPT: &str = r#"
 local place = tostring(game.PlaceId)
 local universe = tostring(game.GameId)
-
 local name = game.Name
 
 local scriptName, scriptClass, line, char = "", "", "", ""
-
 local ok, active = pcall(function() return game:GetService("StudioService").ActiveScript end)
 if ok and active then
     scriptName, scriptClass = active.Name, active.ClassName
@@ -77,7 +75,9 @@ impl Presence {
         }
     }
 
-    pub fn on_tick(&mut self, lua_state: usize, primitives: &Primitives, play_test: bool) {
+    /// Returns whether this state is worth polling again; `false` asks discovery to
+    /// try a different VM, since a Studio session keeps more than one.
+    pub fn on_tick(&mut self, lua_state: usize, primitives: &Primitives, play_test: bool) -> bool {
         if lua_state != self.last_lua_state {
             self.last_lua_state = lua_state;
             self.last_poll = None;
@@ -86,15 +86,18 @@ impl Presence {
         let now = Instant::now();
         if let Some(at) = self.last_poll {
             if now.duration_since(at) < POLL_INTERVAL {
-                return;
+                return true;
             }
         }
         self.last_poll = Some(now);
 
-        let Some(poll) = self.poll(lua_state, primitives) else { return };
+        let Some(poll) = self.poll(lua_state, primitives) else { return true };
+        let has_place = !poll.place_id.is_empty() && poll.place_id != "0";
+
         if let Some(activity) = self.build_activity(&poll, play_test) {
             self.push(activity);
         }
+        has_place
     }
 
     pub fn on_idle(&mut self) {

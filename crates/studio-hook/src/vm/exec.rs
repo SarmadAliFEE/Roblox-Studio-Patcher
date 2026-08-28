@@ -1,14 +1,14 @@
 use core::ffi::{c_char, c_void};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::mem;
 use luau_compile::{self as luau, CompileError};
 
 pub const CLOSURE_IS_C: usize = 0x3;
 pub const CLOSURE_PROTO: usize = 0x18;
-pub const PROTO_CHILDREN: usize = 0x10;
-pub const PROTO_CHILD_COUNT: usize = 0x8c;
-pub const PROTO_CAPABILITY_OVERRIDE: usize = 0x60;
-pub const EXTRA_SPACE_CAPABILITIES: usize = 0x40;
+pub const PROTO_CHILDREN: usize = 0x50;
+pub const PROTO_CHILD_COUNT: usize = 0x94;
+pub const PROTO_CAPABILITY_RECORD: usize = 0x20;
 pub const CONTEXT_CACHED_CAPABILITIES: usize = 0x28;
 pub const CONTEXT_LAZY_FN: usize = 0x30;
 
@@ -21,8 +21,9 @@ const MAX_RESULTS: usize = 64;
 const MAX_PLAUSIBLE_RESULTS: usize = 256;
 const MAX_PROTO_DEPTH: usize = 8;
 const MAX_PROTO_CHILDREN: i32 = 64;
+const LUA_FIELD_SCAN: usize = 0x80;
+const BASE_UNKNOWN: usize = usize::MAX;
 
-static ELEVATED_CAPABILITIES: u64 = u64::MAX;
 
 type LoadFn = unsafe extern "C" fn(*mut c_void, *const c_char, *const u8, usize, i32) -> i32;
 type CallFn = unsafe extern "C" fn(*mut c_void, u64, i32) -> u64;
@@ -79,6 +80,7 @@ pub struct Primitives {
     pub call: usize,
     pub new_thread: Option<usize>,
     pub security_context_current: Option<usize>,
+    pub lua_top: usize,
 }
 
 pub fn read_value(addr: usize) -> Value {
@@ -109,15 +111,29 @@ fn read_string(addr: usize) -> Value {
     Value::Str(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Nulls a proto's capability-record pointer over the whole child tree. The engine's
+/// capability getter returns the full set when the record is null, so clearing it grants
+/// every capability to the loaded chunk - the same recursion the engine uses to stamp a
+/// privileged thread, run in reverse.
 pub fn elevate_proto_tree(proto: usize, depth: usize) {
     if proto == 0 || depth > MAX_PROTO_DEPTH {
         return;
     }
-    let override_ptr = &ELEVATED_CAPABILITIES as *const u64 as usize;
-    let _ = mem::write(proto + PROTO_CAPABILITY_OVERRIDE, override_ptr);
-
     let Ok(count) = mem::read::<i32>(proto + PROTO_CHILD_COUNT) else { return };
-    if count <= 0 || count > MAX_PROTO_CHILDREN {
+    if !(0..=MAX_PROTO_CHILDREN).contains(&count) {
+        return;
+    }
+    if let Ok(record) = mem::read::<usize>(proto + PROTO_CAPABILITY_RECORD) {
+        if mem::looks_like_pointer(record) {
+            let _ = mem::write::<usize>(proto + PROTO_CAPABILITY_RECORD, 0);
+            if PROTO_CLEARS.fetch_add(1, Ordering::Relaxed) < 3 {
+                crate::log(&format!(
+                    "elevate: proto {proto:#x} capability record {record:#x} -> null"
+                ));
+            }
+        }
+    }
+    if count == 0 {
         return;
     }
     let Ok(children) = mem::read_ptr(proto + PROTO_CHILDREN) else { return };
@@ -136,11 +152,6 @@ pub fn elevate_closure(closure: usize) {
     elevate_proto_tree(proto, 0);
 }
 
-pub fn elevate_thread(lua_state: usize) -> bool {
-    let Ok(extra) = mem::read_ptr(lua_state + crate::vm::L_EXTRA_SPACE) else { return false };
-    mem::write(extra + EXTRA_SPACE_CAPABILITIES, u64::MAX).is_ok()
-}
-
 pub fn elevate_security_context(current: usize) -> bool {
     let current: ContextCurrentFn = unsafe { core::mem::transmute(current) };
     let context = unsafe { current() } as usize;
@@ -152,6 +163,69 @@ pub fn elevate_security_context(current: usize) -> bool {
     cached && lazy
 }
 
+static LUA_BASE_OFFSET: AtomicUsize = AtomicUsize::new(BASE_UNKNOWN);
+static LUA_EXTRA_SPACE_OFFSET: AtomicUsize = AtomicUsize::new(BASE_UNKNOWN);
+static CAPABILITY_REFUSALS: AtomicUsize = AtomicUsize::new(0);
+static PROTO_CLEARS: AtomicUsize = AtomicUsize::new(0);
+const EXTRA_SPACE_CAPABILITIES: usize = 0x70;
+const FULL_CAPABILITIES: u64 = 0x3fff_ffff_ffff_ff00;
+
+/// Records where `L->userdata` lives once a thread and its ScriptContext prove the
+/// chain. Until this succeeds `elevate_thread` writes nothing.
+pub fn calibrate_extra_space(lua_state: usize, script_context: usize) {
+    if LUA_EXTRA_SPACE_OFFSET.load(Ordering::Relaxed) != BASE_UNKNOWN {
+        return;
+    }
+    let Some(offset) = crate::vm::layout::derive_extra_space(lua_state, script_context) else {
+        return;
+    };
+    LUA_EXTRA_SPACE_OFFSET.store(offset, Ordering::Relaxed);
+    crate::log(&format!("layout: lua_State extra_space=+{offset:#x} (chain reaches script context)"));
+}
+
+/// Grants the thread every capability so the poll can reach Studio-only services.
+/// The slot is only written when it does not currently hold something pointer-shaped:
+/// a capability mask is far above the user address space, so this refuses to smash a
+/// neighbouring object if the offset is ever wrong for a build.
+pub fn elevate_thread(lua_state: usize) -> bool {
+    let offset = LUA_EXTRA_SPACE_OFFSET.load(Ordering::Relaxed);
+    if offset == BASE_UNKNOWN {
+        return false;
+    }
+    let Ok(extra) = mem::read_ptr(lua_state + offset) else { return false };
+    let slot = extra + EXTRA_SPACE_CAPABILITIES;
+    let Ok(current) = mem::read::<u64>(slot) else { return false };
+    if mem::looks_like_pointer(current as usize) {
+        if CAPABILITY_REFUSALS.fetch_add(1, Ordering::Relaxed) == 0 {
+            crate::log(&format!(
+                "layout: capability slot at extra+{EXTRA_SPACE_CAPABILITIES:#x} holds {current:#x}, refusing to write"
+            ));
+        }
+        return false;
+    }
+    mem::write(slot, FULL_CAPABILITIES).is_ok()
+}
+
+/// Locates `L->base` by looking for the field holding `expected`, the stack slot the
+/// freshly loaded closure sits at. Cached because the offset is fixed per Studio build.
+fn base_offset(lua_state: usize, expected: usize, top_offset: usize) -> Option<usize> {
+    let cached = LUA_BASE_OFFSET.load(Ordering::Relaxed);
+    if cached != BASE_UNKNOWN {
+        return Some(cached);
+    }
+    for offset in (0..LUA_FIELD_SCAN).step_by(8) {
+        if offset == top_offset {
+            continue;
+        }
+        if mem::read::<usize>(lua_state + offset) == Ok(expected) {
+            LUA_BASE_OFFSET.store(offset, Ordering::Relaxed);
+            crate::log(&format!("layout: lua_State base=+{offset:#x} (matched loaded closure slot)"));
+            return Some(offset);
+        }
+    }
+    None
+}
+
 const LUA_THREAD_TAG: u8 = 0x0a;
 
 pub fn run(shared: usize, primitives: &Primitives, source: &str, chunk: &str) -> Result<Vec<Value>, ExecError> {
@@ -161,7 +235,7 @@ pub fn run(shared: usize, primitives: &Primitives, source: &str, chunk: &str) ->
 
     let bytecode = luau::compile(source).map_err(ExecError::Compile)?;
 
-    let shared_top_before = mem::read::<usize>(shared + crate::vm::L_TOP)
+    let shared_top_before = mem::read::<usize>(shared + primitives.lua_top)
         .map_err(|_| ExecError::CorruptStack { top: 0, base: 0 })?;
 
     let lua_state = match primitives.new_thread {
@@ -191,9 +265,10 @@ pub fn run(shared: usize, primitives: &Primitives, source: &str, chunk: &str) ->
         return Err(ExecError::LoadFailed(status));
     }
 
-    let top = mem::read::<usize>(lua_state + crate::vm::L_TOP)
+    let top = mem::read::<usize>(lua_state + primitives.lua_top)
         .map_err(|_| ExecError::CorruptStack { top: 0, base: 0 })?;
     let base = top - TVALUE_SIZE;
+    let base_field = base_offset(lua_state, base, primitives.lua_top);
 
     if let Ok(closure) = mem::read_ptr(base) {
         elevate_closure(closure);
@@ -206,14 +281,15 @@ pub fn run(shared: usize, primitives: &Primitives, source: &str, chunk: &str) ->
     let call: CallFn = unsafe { core::mem::transmute(primitives.call) };
     let status = unsafe { call(lua_state as *mut c_void, 0, 0) };
 
-    let top_after = mem::read::<usize>(lua_state + crate::vm::L_TOP)
+    let top_after = mem::read::<usize>(lua_state + primitives.lua_top)
         .map_err(|_| ExecError::CorruptStack { top: 0, base: 0 })?;
-    let base_after = mem::read::<usize>(lua_state + crate::vm::L_BASE)
-        .map_err(|_| ExecError::CorruptStack { top: top_after, base: 0 })?;
+    let base_after = base_field
+        .and_then(|field| mem::read::<usize>(lua_state + field).ok())
+        .unwrap_or(base);
 
     let restore = |result| {
         if lua_state != shared {
-            let _ = mem::write(shared + crate::vm::L_TOP, shared_top_before);
+            let _ = mem::write(shared + primitives.lua_top, shared_top_before);
         }
         result
     };

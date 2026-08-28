@@ -1,13 +1,16 @@
 use core::time::Duration;
 use std::time::Instant;
 
-use crate::vm::{self, Cursor, GAME_STATE_EDIT};
+use crate::vm::layout::LuaProbe;
+use crate::vm::{self, Cursor};
 
 pub const STALE_AFTER: Duration = Duration::from_millis(700);
 pub const PLAY_TEST_RECENT: Duration = Duration::from_millis(3000);
 pub const FORGET_AFTER: Duration = Duration::from_millis(8000);
 pub const MAX_TRACKED: usize = 24;
 const DATA_MODEL_FIELDS: usize = 0x40;
+const PLACELESS_STRIKES: u32 = 3;
+pub const PLACELESS_COOLDOWN: Duration = Duration::from_millis(15000);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Vtables {
@@ -30,8 +33,10 @@ struct Tracked {
     dm_cursor: Cursor,
     dm_searched: bool,
     script_context: Option<usize>,
-    lua_state: Option<usize>,
-    game_state: i32,
+    lua_states: Vec<usize>,
+    lua_index: usize,
+    strikes: u32,
+    retry_after: Option<Instant>,
     last_seen: Instant,
 }
 
@@ -43,14 +48,20 @@ impl Tracked {
             dm_cursor: Cursor::default(),
             dm_searched: false,
             script_context: None,
-            lua_state: None,
-            game_state: -1,
+            lua_states: Vec::new(),
+            lua_index: 0,
+            strikes: 0,
+            retry_after: None,
             last_seen: now,
         }
     }
 
-    fn is_edit(&self) -> bool {
-        self.game_state == GAME_STATE_EDIT
+    fn pollable(&self, now: Instant) -> bool {
+        !self.lua_states.is_empty() && self.retry_after.map(|at| now >= at).unwrap_or(true)
+    }
+
+    fn current_lua_state(&self) -> Option<usize> {
+        self.lua_states.get(self.lua_index).copied()
     }
 
     fn edit_ready(&self) -> Option<Ready> {
@@ -58,21 +69,43 @@ impl Tracked {
             job: self.job,
             data_model: self.data_model?,
             script_context: self.script_context?,
-            lua_state: self.lua_state?,
+            lua_state: self.current_lua_state()?,
         })
     }
 }
 
 pub struct Discovery {
     vtables: Vtables,
+    probe: LuaProbe,
     jobs: Vec<Tracked>,
     live_edit: Option<usize>,
     capture: Option<Ready>,
 }
 
 impl Discovery {
-    pub fn new(vtables: Vtables) -> Discovery {
-        Discovery { vtables, jobs: Vec::new(), live_edit: None, capture: None }
+    pub fn new(vtables: Vtables, probe: LuaProbe) -> Discovery {
+        Discovery { vtables, probe, jobs: Vec::new(), live_edit: None, capture: None }
+    }
+
+    /// Records that `lua_state` polled without a place, so a Studio session holding
+    /// several VMs eventually settles on the one with the open place.
+    pub fn mark_placeless(&mut self, lua_state: usize) {
+        let now = Instant::now();
+        for job in self.jobs.iter_mut().filter(|j| j.current_lua_state() == Some(lua_state)) {
+            job.strikes = job.strikes.saturating_add(1);
+            if job.strikes < PLACELESS_STRIKES {
+                continue;
+            }
+            job.strikes = 0;
+            job.lua_index += 1;
+            if job.lua_index >= job.lua_states.len() {
+                job.lua_index = 0;
+                job.retry_after = Some(now + PLACELESS_COOLDOWN);
+            }
+        }
+        if self.capture.map(|ready| ready.lua_state) == Some(lua_state) {
+            self.capture = None;
+        }
     }
 
     pub fn on_step(&mut self, job: usize, now: Instant) {
@@ -93,7 +126,7 @@ impl Discovery {
         }
         self.jobs
             .iter()
-            .filter(|j| j.is_edit() && now.duration_since(j.last_seen) < STALE_AFTER)
+            .filter(|j| j.pollable(now) && now.duration_since(j.last_seen) < STALE_AFTER)
             .filter_map(Tracked::edit_ready)
             .find(|ready| self.still_live(ready))
     }
@@ -101,13 +134,11 @@ impl Discovery {
     fn still_live(&self, ready: &Ready) -> bool {
         vm::object_matches_vtable(ready.data_model, self.vtables.data_model)
             && vm::object_matches_vtable(ready.script_context, self.vtables.script_context)
-            && vm::is_edit_data_model(ready.data_model)
+            && self.probe.looks_like_lua_state(ready.lua_state)
     }
 
-    pub fn play_test_active(&self, now: Instant) -> bool {
-        self.jobs.iter().any(|j| {
-            vm::is_play_test_state(j.game_state) && now.duration_since(j.last_seen) < PLAY_TEST_RECENT
-        })
+    pub fn play_test_active(&self, _now: Instant) -> bool {
+        false
     }
 
     fn slot_for(&mut self, job: usize, now: Instant) -> usize {
@@ -133,15 +164,14 @@ impl Discovery {
     fn locate_data_model(&mut self, index: usize, job: usize) {
         if let Some(data_model) = self.jobs[index].data_model {
             if vm::object_matches_vtable(data_model, self.vtables.data_model) {
-                if let Some(state) = vm::game_state_type(data_model) {
-                    self.jobs[index].game_state = state;
-                }
             } else {
                 let entry = &mut self.jobs[index];
                 entry.data_model = None;
                 entry.script_context = None;
-                entry.lua_state = None;
-                entry.game_state = -1;
+                entry.lua_states.clear();
+                entry.lua_index = 0;
+                entry.strikes = 0;
+                entry.retry_after = None;
                 entry.dm_searched = false;
                 entry.dm_cursor.reset();
             }
@@ -157,7 +187,6 @@ impl Discovery {
         match found {
             Some(data_model) => {
                 entry.data_model = Some(data_model);
-                entry.game_state = vm::game_state_type(data_model).unwrap_or(-1);
                 entry.dm_searched = true;
             }
             None if entry.dm_cursor.exhausted() => {
@@ -169,28 +198,35 @@ impl Discovery {
 
     fn resolve_lua_state(&mut self, index: usize, job: usize) {
         let entry = &self.jobs[index];
-        if !entry.is_edit() || entry.data_model.is_none() || entry.lua_state.is_some() {
+        if entry.data_model.is_none() || !entry.lua_states.is_empty() {
             return;
         }
         let data_model = entry.data_model;
-        if let Some((context, lua_state)) = self.jobs.iter().find_map(|j| {
-            (j.data_model == data_model && j.lua_state.is_some())
-                .then(|| (j.script_context, j.lua_state))
+        if let Some((context, states)) = self.jobs.iter().find_map(|j| {
+            (j.data_model == data_model && !j.lua_states.is_empty())
+                .then(|| (j.script_context, j.lua_states.clone()))
         }) {
             let entry = &mut self.jobs[index];
             entry.script_context = context;
-            entry.lua_state = lua_state;
+            entry.lua_states = states;
+            entry.lua_index = 0;
             return;
         }
-        let context = self.find_script_context(job);
-        let lua_state = context.and_then(|context| {
-            vm::authoritative_lua_state(context)
-                .or_else(|| vm::find_lua_state_near(context, 0x100, &mut Cursor::default()))
-        });
-        let Some(context) = context else { return };
+        let Some(context) = self.find_script_context(job) else { return };
+        let states = vm::main_thread_candidates(context, &self.probe);
+        if !states.is_empty() {
+            crate::log(&format!(
+                "vm: script context {context:#x} exposes {} main thread(s)",
+                states.len()
+            ));
+        }
+        if let Some(first) = states.first() {
+            crate::vm::exec::calibrate_extra_space(*first, context);
+        }
         let entry = &mut self.jobs[index];
         entry.script_context = Some(context);
-        entry.lua_state = lua_state;
+        entry.lua_states = states;
+        entry.lua_index = 0;
     }
 
     fn find_script_context(&self, job: usize) -> Option<usize> {
@@ -220,23 +256,49 @@ impl Discovery {
 mod tests {
     use super::*;
 
+    fn probe() -> LuaProbe {
+        LuaProbe { global: 0x28, top: 0x18 }
+    }
+
     fn vtables() -> Vtables {
         Vtables { data_model: 0xdd00_0000, script_context: 0xcc00_0000, waiting_hybrid: None }
+    }
+
+    fn backed_lua_state() -> usize {
+        let global: &'static mut [u64] = Box::leak(vec![0u64; 4].into_boxed_slice());
+        let state: &'static mut [u64] = Box::leak(vec![0u64; 16].into_boxed_slice());
+        state[0] = 0x0a;
+        state[0x28 / 8] = global.as_ptr() as u64;
+        state.as_ptr() as usize
+    }
+
+    fn backed_edit(last_seen: Instant) -> Tracked {
+        let dm: &'static mut [u64] = Box::leak(vec![0u64; 0x100].into_boxed_slice());
+        dm[0] = vtables().data_model as u64;
+        let sc: &'static mut [u64] = Box::leak(vec![0u64; 4].into_boxed_slice());
+        sc[0] = vtables().script_context as u64;
+        Tracked {
+            data_model: Some(dm.as_ptr() as usize),
+            script_context: Some(sc.as_ptr() as usize),
+            lua_states: vec![backed_lua_state()],
+            strikes: 0,
+            ..Tracked::new(1, last_seen)
+        }
     }
 
     fn edit(lua_state: usize, last_seen: Instant) -> Tracked {
         Tracked {
             data_model: Some(0x1000),
             script_context: Some(0x2000),
-            lua_state: Some(lua_state),
-            game_state: GAME_STATE_EDIT,
+            lua_states: vec![lua_state],
+            strikes: 0,
             ..Tracked::new(1, last_seen)
         }
     }
 
     #[test]
     fn a_fresh_discovery_reports_nothing() {
-        let discovery = Discovery::new(vtables());
+        let discovery = Discovery::new(vtables(), probe());
         assert!(discovery.edit(Instant::now()).is_none());
         assert!(!discovery.play_test_active(Instant::now()));
     }
@@ -250,21 +312,22 @@ mod tests {
         let mut sc = vec![0u64; 4];
         sc[0] = vtables().script_context as u64;
 
-        let mut discovery = Discovery::new(vtables());
+        let lua_state = backed_lua_state();
+        let mut discovery = Discovery::new(vtables(), probe());
         discovery.jobs.push(Tracked {
             data_model: Some(dm.as_ptr() as usize),
             script_context: Some(sc.as_ptr() as usize),
-            lua_state: Some(0xabc),
-            game_state: GAME_STATE_EDIT,
+            lua_states: vec![lua_state],
+            strikes: 0,
             ..Tracked::new(1, now)
         });
-        assert_eq!(discovery.edit(now).map(|r| r.lua_state), Some(0xabc));
+        assert_eq!(discovery.edit(now).map(|r| r.lua_state), Some(lua_state));
     }
 
     #[test]
     fn a_stale_edit_job_is_no_longer_the_capture() {
         let start = Instant::now();
-        let mut discovery = Discovery::new(vtables());
+        let mut discovery = Discovery::new(vtables(), probe());
         discovery.jobs.push(edit(0xabc, start));
         assert!(discovery.edit(start + STALE_AFTER + Duration::from_millis(1)).is_none());
     }
@@ -272,30 +335,58 @@ mod tests {
     #[test]
     fn an_edit_job_without_a_lua_state_is_not_ready() {
         let now = Instant::now();
-        let mut discovery = Discovery::new(vtables());
+        let mut discovery = Discovery::new(vtables(), probe());
         let mut pending = edit(0, now);
-        pending.lua_state = None;
+        pending.lua_states.clear();
         discovery.jobs.push(pending);
         assert!(discovery.edit(now).is_none());
     }
 
     #[test]
-    fn a_recent_play_datamodel_marks_play_test_active() {
+    fn a_placeless_vm_hands_over_to_the_next_one_in_the_context() {
         let now = Instant::now();
-        let mut discovery = Discovery::new(vtables());
-        discovery.jobs.push(Tracked {
-            data_model: Some(0x3000),
-            game_state: 1,
-            ..Tracked::new(2, now)
-        });
-        assert!(discovery.play_test_active(now));
-        assert!(!discovery.play_test_active(now + PLAY_TEST_RECENT + Duration::from_millis(1)));
+        let mut discovery = Discovery::new(vtables(), probe());
+        let mut job = backed_edit(now);
+        let second = backed_lua_state();
+        job.lua_states.push(second);
+        let first = job.lua_states[0];
+        discovery.jobs.push(job);
+
+        assert_eq!(discovery.edit(now).map(|r| r.lua_state), Some(first));
+        for _ in 0..PLACELESS_STRIKES {
+            discovery.mark_placeless(first);
+        }
+        assert_eq!(discovery.edit(now).map(|r| r.lua_state), Some(second));
+    }
+
+    #[test]
+    fn a_vm_that_never_reports_a_place_is_given_up_on() {
+        let now = Instant::now();
+        let mut discovery = Discovery::new(vtables(), probe());
+        discovery.jobs.push(backed_edit(now));
+        let ready = discovery.edit(now).expect("a candidate to start with");
+
+        for _ in 0..PLACELESS_STRIKES {
+            discovery.mark_placeless(ready.lua_state);
+        }
+        assert!(discovery.edit(Instant::now()).is_none());
+    }
+
+    #[test]
+    fn a_vm_is_kept_while_it_still_has_strikes_left() {
+        let now = Instant::now();
+        let mut discovery = Discovery::new(vtables(), probe());
+        discovery.jobs.push(backed_edit(now));
+        let ready = discovery.edit(now).expect("a candidate to start with");
+
+        discovery.mark_placeless(ready.lua_state);
+        assert!(discovery.edit(now).is_some());
     }
 
     #[test]
     fn eviction_keeps_the_table_bounded() {
         let now = Instant::now();
-        let mut discovery = Discovery::new(vtables());
+        let mut discovery = Discovery::new(vtables(), probe());
         for i in 0..MAX_TRACKED + 8 {
             discovery.slot_for(0x100 + i, now + Duration::from_millis(i as u64));
         }

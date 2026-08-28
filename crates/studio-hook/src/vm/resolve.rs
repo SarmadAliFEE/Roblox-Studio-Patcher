@@ -33,8 +33,11 @@ pub struct Resolved {
     pub jobs: Vec<JobVtable>,
 }
 
-fn find_unique(name: &'static str, spec: &str, text: &[Segment]) -> Result<usize, ResolveError> {
-    let pattern = Pattern::parse(spec).map_err(|_| ResolveError::BadPattern(name))?;
+fn scan_unique(
+    name: &'static str,
+    pattern: &Pattern,
+    text: &[Segment],
+) -> Result<usize, ResolveError> {
     let mut hits = Vec::new();
     for segment in text {
         let Some(bytes) = segment.as_slice() else { continue };
@@ -50,6 +53,34 @@ fn find_unique(name: &'static str, spec: &str, text: &[Segment]) -> Result<usize
     }
 }
 
+/// Bytes at `addr`, formatted as a signature string ready to paste into `signatures`.
+fn signature_at(addr: usize, pattern: &Pattern, text: &[Segment]) -> Option<String> {
+    let segment = text.iter().find(|segment| segment.contains(addr))?;
+    let bytes = segment.as_slice()?;
+    let start = addr.checked_sub(segment.start)?;
+    let window = bytes.get(start..start.checked_add(pattern.len())?)?;
+    Some(pattern.render(window))
+}
+
+fn find_unique(name: &'static str, spec: &str, text: &[Segment]) -> Result<usize, ResolveError> {
+    let pattern = Pattern::parse(spec).map_err(|_| ResolveError::BadPattern(name))?;
+    let strict = scan_unique(name, &pattern, text);
+    if !matches!(strict, Err(ResolveError::NotFound(_))) {
+        return strict;
+    }
+    let Some(relaxed) = pattern.relaxed() else { return strict };
+    match scan_unique(name, &relaxed, text) {
+        Ok(addr) => {
+            let found = signature_at(addr, &pattern, text).unwrap_or_else(|| "?".to_owned());
+            crate::log(&format!(
+                "resolve: {name} drifted - matched with offsets masked at {addr:#x}, refresh to: {found}"
+            ));
+            Ok(addr)
+        }
+        Err(_) => strict,
+    }
+}
+
 fn find_optional(name: &'static str, spec: &str, text: &[Segment]) -> Option<usize> {
     match find_unique(name, spec, text) {
         Ok(addr) => Some(addr),
@@ -62,10 +93,12 @@ fn find_optional(name: &'static str, spec: &str, text: &[Segment]) -> Option<usi
 
 fn find_first(name: &'static str, spec: &str, text: &[Segment]) -> Option<usize> {
     let pattern = Pattern::parse(spec).ok()?;
-    for segment in text {
-        let Some(bytes) = segment.as_slice() else { continue };
-        if let Some(at) = pattern.find_all(bytes).into_iter().next() {
-            return Some(segment.start + at);
+    for candidate in [Some(pattern.clone()), pattern.relaxed()].into_iter().flatten() {
+        for segment in text {
+            let Some(bytes) = segment.as_slice() else { continue };
+            if let Some(at) = candidate.find_all(bytes).into_iter().next() {
+                return Some(segment.start + at);
+            }
         }
     }
     crate::log(&format!("resolve: {name} unavailable (NotFound)"));

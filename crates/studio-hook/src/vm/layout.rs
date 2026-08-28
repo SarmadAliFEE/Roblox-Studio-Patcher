@@ -79,10 +79,22 @@ impl LuaProbe {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
 const SPC_USERDATA_STORE: usize = 0;
+#[cfg(target_arch = "aarch64")]
 const SPC_CHILD_COUNT_LOAD: usize = 4;
+#[cfg(target_arch = "aarch64")]
 const SPC_CHILDREN_LOAD: usize = 44;
+#[cfg(target_arch = "aarch64")]
 const GTC_CAPABILITIES_LOAD: usize = 40;
+#[cfg(not(target_arch = "aarch64"))]
+const SPC_USERDATA_STORE: usize = 0;
+#[cfg(not(target_arch = "aarch64"))]
+const SPC_CHILD_COUNT_LOAD: usize = 0x33;
+#[cfg(not(target_arch = "aarch64"))]
+const SPC_CHILDREN_LOAD: usize = 0x20;
+#[cfg(not(target_arch = "aarch64"))]
+const GTC_CAPABILITIES_LOAD: usize = 0x13;
 
 /// Struct offsets used when granting a loaded chunk full capabilities, recovered from the
 /// engine's own `setProtoCapabilities` and `getThreadCapabilities` 
@@ -112,9 +124,18 @@ impl CapabilityLayout {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
 fn decode_at(instruction_addr: usize) -> Option<usize> {
     let word: u32 = mem::read(instruction_addr).ok()?;
     let offset = scan::decode_arm64_load_offset(word)?;
+    (offset != 0).then_some(offset)
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn decode_at(instruction_addr: usize) -> Option<usize> {
+    let mut bytes = [0u8; 8];
+    mem::read_bytes(instruction_addr, &mut bytes).ok()?;
+    let offset = scan::decode_x86_load_offset(bytes)?;
     (offset != 0).then_some(offset)
 }
 
@@ -196,5 +217,16 @@ mod tests {
         assert!(scan::decode_x86_load_offset([0x55, 0x48, 0x89, 0xe5, 0, 0, 0, 0]).is_none());
         assert!(scan::decode_x86_load_offset([0x48, 0x8b, 0x03, 0x30, 0, 0, 0, 0]).is_none());
         assert!(scan::decode_x86_load_offset([0x48, 0x8b, 0x44, 0x24, 0x50, 0, 0, 0]).is_none());
+    }
+
+    #[test]
+    fn decodes_the_x86_capability_stores_and_movsxd() {
+        assert_eq!(scan::decode_x86_load_offset([0x48, 0x89, 0x77, 0x60, 0, 0, 0, 0]), Some(0x60));
+        assert_eq!(scan::decode_x86_load_offset([0x49, 0x8b, 0x46, 0x10, 0, 0, 0, 0]), Some(0x10));
+        assert_eq!(
+            scan::decode_x86_load_offset([0x49, 0x63, 0x86, 0x8c, 0x00, 0x00, 0x00, 0]),
+            Some(0x8c)
+        );
+        assert_eq!(scan::decode_x86_load_offset([0x4c, 0x8b, 0x70, 0x40, 0, 0, 0, 0]), Some(0x40));
     }
 }

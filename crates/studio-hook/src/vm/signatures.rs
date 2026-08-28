@@ -136,8 +136,19 @@ mod arch {
     );
 
     pub const CAN_ACCESS_RESTRICTED_BL: usize = 0x10;
-    pub const SET_PROTO_CAPS: &str = "";
-    pub const GET_THREAD_CAPS: &str = "";
+
+    pub const SET_PROTO_CAPS: &str = concat!(
+        "48 89 77 ?? 83 bf ?? ?? ?? ?? 00 7e ?? 55 48 89 ",
+        "e5 41 57 41 56 53 50 48 89 f3 49 89 fe 45 31 ff ",
+        "49 8b 46 ?? 4a 8b 3c f8 48 89 de e8 ?? ?? ?? ?? ",
+        "49 ff c7 49 63 86 ?? ?? ?? ??",
+    );
+
+    pub const GET_THREAD_CAPS: &str = concat!(
+        "55 48 89 e5 41 56 53 48 89 fb 48 85 f6 74 ?? 48 ",
+        "8b 46 ?? 4c 8b 70 ?? 48 89 f7 e8 ?? ?? ?? ?? 48 ",
+        "85 c0 74 ?? 4c 23 30 48 81 cb 00 ff ff ff",
+    );
 }
 
 pub use arch::*;

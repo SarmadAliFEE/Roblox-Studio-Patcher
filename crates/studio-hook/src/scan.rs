@@ -230,10 +230,14 @@ pub const fn decode_arm64_load_offset(word: u32) -> Option<usize> {
     Some(imm12 << scale)
 }
 
-/// Byte offset encoded in an x86-64 `mov r64, [reg+disp]` (`REX.W 8B /r`), the form
-/// Studio's x86 builds use to load a struct field. `None` when `bytes` is not that form.
+/// Byte offset encoded in an x86-64 `REX.W` memory instruction with a `[reg+disp]`
+/// operand: `mov` load (`8B`), `mov` store (`89`), or `movsxd` (`63`). These are the
+/// forms Studio's x86 builds use to touch a struct field. `None` otherwise.
 pub fn decode_x86_load_offset(bytes: [u8; 8]) -> Option<usize> {
-    if bytes[0] & 0xf8 != 0x48 || bytes[1] != 0x8b {
+    if bytes[0] & 0xf0 != 0x40 {
+        return None;
+    }
+    if !matches!(bytes[1], 0x8b | 0x89 | 0x63) {
         return None;
     }
     let modrm = bytes[2];

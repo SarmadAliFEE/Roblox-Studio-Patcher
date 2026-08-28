@@ -1,8 +1,8 @@
 # Roblox-Studio-Patcher
 
-![platform](https://img.shields.io/badge/platform-macOS%20arm64%20%7C%20macOS%20x86__64%20%7C%20windows-blue) ![built in rust](https://img.shields.io/badge/built%20in-rust-orange) ![deps none](https://img.shields.io/badge/runtime%20deps-none-brightgreen)
+![platform](https://img.shields.io/badge/platform-macOS%20arm64%20%7C%20macOS%20x86__64%20%7C%20windows%20%7C%20linux-blue) ![built in rust](https://img.shields.io/badge/built%20in-rust-orange) ![deps none](https://img.shields.io/badge/runtime%20deps-none-brightgreen)
 
-flips Studio's `HasInternalPermission` to always-true, plus a handful of optional native hooks. one binary, no install, nothing to compile. mac (arm64 + intel) + windows.
+flips Studio's `HasInternalPermission` to always-true, plus a handful of optional native hooks. one binary, no install, nothing to compile. mac (arm64 + intel), windows, and linux via vinegar.
 
 > [!NOTE]
 > it patches Studio's binary on disk. a Studio update replaces that binary, so rerun the tool after each update. the original is backed up as `.bak-<timestamp>` next to it either way.
@@ -22,7 +22,7 @@ on top of the permission patch, opt into any of:
 - **plugin palette** - recolor the Explorer / ribbon / find-replace plugins, colors baked into their bytecode
 - **script editor background** - a custom image behind your code
 - **window transparency** - hotkeys to fade the whole window
-- **discord rich presence** - the place, script, and line you're editing *(mac for now)*
+- **discord rich presence** - the place, script, and line you're editing *(mac + windows)*
 
 ## usage
 
@@ -50,6 +50,16 @@ chmod +x Roblox-Studio-Patcher-mac-intel
 Roblox-Studio-Patcher-windows.exe
 ```
 
+**linux (vinegar)**
+
+```sh
+chmod +x Roblox-Studio-Patcher-linux
+./Roblox-Studio-Patcher-linux                                          # finds studio in vinegar's versions dir
+./Roblox-Studio-Patcher-linux --binary /path/to/RobloxStudioBeta.exe   # or a custom path
+```
+
+vinegar runs the windows build of studio under wine, so this patches that PE and drops the windows hook dll beside it. configs are written into the wineprefix (`drive_c/users/Public/rbxthemeset`), which is where the hook reads them from.
+
 finds Studio under `%LOCALAPPDATA%\Roblox\Versions` on its own, or pass `--binary path\to\RobloxStudioBeta.exe`.
 
 just run it - a plain run walks through each option below and asks yes/no. backs up the original binary first (`.bak-<timestamp>` next to it), and checks for a newer release before starting (`--update` to only do that, say no to keep what you've got).
@@ -58,15 +68,15 @@ just run it - a plain run walks through each option below and asks yes/no. backs
 
 all opt-in - the default run asks, or reach for the flag.
 
-**themes** (`--themes`) redirects Studio's theme jsons onto disk (`/Users/Shared/rbx-theme-set/` on mac, `C:\Users\Public\rbxthemeset` on windows) so you can edit and relaunch. drops the stock jsons there on first run. edit `FoundationDarkTheme.json` / `FoundationLightTheme.json`, whichever one Studio's actually using, then relaunch.
+**themes** (`--themes`) redirects Studio's theme jsons onto disk (`/Users/Shared/rbx-theme-set/` on mac, `C:\Users\Public\rbxthemeset` on windows and linux) so you can edit and relaunch. drops the stock jsons there on first run. edit `FoundationDarkTheme.json` / `FoundationLightTheme.json`, whichever one Studio's actually using, then relaunch.
 
 **plugin colors** (`--rbxm-palette`) the Explorer, ribbon, and find/replace plugins are Roact with colors baked into their compiled bytecode - the theme jsons don't reach them. this patches them from a `RbxmPalette` block in the same json and splices straight into the `.rbxm`. baked at patch time, so rerun after edits, or leave `--watch` running and it reapplies on save. still needs a full quit and reopen after.
 
 **native hooks** one small rust payload injected through the binary's import table (doesn't touch running memory). the studio-hook cdylib is embedded in the exe, so there's nothing to build and no dll to ship. configs live in the theme-set folder above:
 
 - script editor background - `EditorBackground.json`, blank `image` = off
-- window transparency - `WindowTransparency.json`, ctrl+=/ctrl+- on mac, alt+=/alt+- on windows
-- discord presence (`--discord`, mac for now) - place name, active script, cursor line, testing status, a thumbnail
+- window transparency - `WindowTransparency.json`, ctrl+=/ctrl+- on mac, alt+=/alt+- on windows and linux
+- discord presence (`--discord`, mac + windows) - place name, active script, cursor line, testing status, a thumbnail. not on linux: wine has no AF_UNIX socket support, so the hook can't reach discord's ipc socket - vinegar ships its own presence instead
 
 `--inject path/to/thing.dylib` / `.dll` loads your own hook instead.
 

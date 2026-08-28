@@ -15,18 +15,33 @@ pub const PAYLOAD_NAME: &str = "studio_hook_x86_64.dylib";
 
 const BACKUP_PREFIX: &str = "bak-";
 
-/// On Windows the payload sits beside the executable; elsewhere it lives in the
-/// shared themes directory.
+/// Beside the executable wherever studio is a PE, and in the shared themes directory on
+/// mac. Linux patches a PE too, so the payload lands next to it there as well.
 fn payload_path(target: &Path) -> PathBuf {
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         target.parent().unwrap_or(target).join(PAYLOAD_NAME)
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
         let _ = target;
         Path::new(themes::THEMES_DIR).join(PAYLOAD_NAME)
     }
+}
+
+/// Rewrites a path the hook resolves inside the wineprefix into one the host can stat.
+#[cfg(target_os = "linux")]
+fn host_view(path: &str) -> PathBuf {
+    let trimmed: &str = path.trim_start_matches(themes::THEMES_DIR);
+    if trimmed.len() == path.len() {
+        return PathBuf::from(path);
+    }
+    themes::host_dir().join(trimmed.trim_start_matches(['\\', '/']).replace('\\', "/"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn host_view(path: &str) -> PathBuf {
+    PathBuf::from(path)
 }
 
 /// Backups written beside `target` by [`binary::backup`], newest first.
@@ -109,7 +124,7 @@ fn feature_line(label: &str, path: &Path) {
     if let Some(image) = json.get("image").and_then(serde_json::Value::as_str) {
         if image.is_empty() {
             note.push_str(&format!(" {}", term::dim("(no image set)")));
-        } else if Path::new(image).exists() {
+        } else if host_view(image).exists() {
             note.push_str(&format!(" {}", term::dim(image)));
         } else {
             note.push_str(&format!(" {} {}", term::red("missing image"), term::dim(image)));

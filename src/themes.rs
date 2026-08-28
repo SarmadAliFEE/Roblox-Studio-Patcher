@@ -64,10 +64,6 @@ pub fn dark_json_path() -> PathBuf {
     host_dir().join("FoundationDarkTheme.json")
 }
 
-pub fn light_json_path() -> PathBuf {
-    host_dir().join("FoundationLightTheme.json")
-}
-
 pub fn editor_background_json_path() -> PathBuf {
     host_dir().join("EditorBackground.json")
 }
@@ -84,7 +80,7 @@ const EDITOR_BACKGROUND_DEFAULTS: &str = concat!(
     "}\n",
 );
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const WINDOW_TRANSPARENCY_DEFAULTS: &str = concat!(
     "{\n",
     "    \"enabled\": true,\n",
@@ -95,7 +91,7 @@ const WINDOW_TRANSPARENCY_DEFAULTS: &str = concat!(
     "    \"decreaseHotkey\": \"alt+-\"\n",
     "}\n",
 );
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 const WINDOW_TRANSPARENCY_DEFAULTS: &str = concat!(
     "{\n",
     "    \"enabled\": true,\n",

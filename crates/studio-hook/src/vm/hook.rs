@@ -139,10 +139,16 @@ pub fn install() -> Result<usize, InstallError> {
         (resolved.luau_load, resolved.call_dispatch, probe)
     {
         let caps = CapabilityLayout::derive(resolved.set_proto_caps, resolved.get_thread_caps);
-        crate::log(&format!(
-            "layout: caps proto_userdata=+{:#x} children=+{:#x} count=+{:#x} extra_caps=+{:#x}",
-            caps.proto_userdata, caps.proto_children, caps.proto_child_count, caps.extra_capabilities
-        ));
+        match caps {
+            Some(caps) => crate::log(&format!(
+                "layout: caps proto_userdata=+{:#x} children=+{:#x} count=+{:#x} extra_caps=+{:#x}",
+                caps.proto_userdata,
+                caps.proto_children,
+                caps.proto_child_count,
+                caps.extra_capabilities
+            )),
+            None => crate::log("layout: capability offsets unreadable, elevation disabled"),
+        }
         *PRIMITIVES.lock().unwrap_or_else(|p| p.into_inner()) = Some(Primitives {
             load,
             call,

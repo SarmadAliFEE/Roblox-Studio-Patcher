@@ -1,8 +1,14 @@
 use crate::mem;
 use crate::scan;
 
+#[cfg(target_arch = "aarch64")]
 const CALL_DISPATCH_GLOBAL_LOAD: usize = 36;
+#[cfg(target_arch = "aarch64")]
 const CALL_DISPATCH_TOP_LOAD: usize = 52;
+#[cfg(not(target_arch = "aarch64"))]
+const CALL_DISPATCH_GLOBAL_LOAD: usize = 0x1c;
+#[cfg(not(target_arch = "aarch64"))]
+const CALL_DISPATCH_TOP_LOAD: usize = 0x31;
 const LUA_THREAD_TAG: u8 = 0x0a;
 const MAIN_THREAD_TO_GLOBAL: usize = 0x80;
 
@@ -17,15 +23,35 @@ pub struct LuaProbe {
 impl LuaProbe {
     /// Decodes the offsets from `call_dispatch`, which loads `L->global` and `L->top`
     /// at fixed positions inside the matched signature.
+    #[cfg(target_arch = "aarch64")]
     pub fn from_call_dispatch(call_dispatch: usize) -> Option<LuaProbe> {
         let global_word: u32 = mem::read(call_dispatch + CALL_DISPATCH_GLOBAL_LOAD).ok()?;
         let top_word: u32 = mem::read(call_dispatch + CALL_DISPATCH_TOP_LOAD).ok()?;
         Self::from_words(global_word, top_word)
     }
 
+    /// x86 builds load the same two fields with `mov r64, [reg+disp]`, so the offsets are
+    /// read out of the instruction stream the same way, only with a different encoding.
+    #[cfg(not(target_arch = "aarch64"))]
+    pub fn from_call_dispatch(call_dispatch: usize) -> Option<LuaProbe> {
+        let mut global_bytes = [0u8; 8];
+        let mut top_bytes = [0u8; 8];
+        mem::read_bytes(call_dispatch + CALL_DISPATCH_GLOBAL_LOAD, &mut global_bytes).ok()?;
+        mem::read_bytes(call_dispatch + CALL_DISPATCH_TOP_LOAD, &mut top_bytes).ok()?;
+        Self::from_offsets(
+            scan::decode_x86_load_offset(global_bytes)?,
+            scan::decode_x86_load_offset(top_bytes)?,
+        )
+    }
+
     pub fn from_words(global_word: u32, top_word: u32) -> Option<LuaProbe> {
-        let global = scan::decode_arm64_load_offset(global_word)?;
-        let top = scan::decode_arm64_load_offset(top_word)?;
+        Self::from_offsets(
+            scan::decode_arm64_load_offset(global_word)?,
+            scan::decode_arm64_load_offset(top_word)?,
+        )
+    }
+
+    fn from_offsets(global: usize, top: usize) -> Option<LuaProbe> {
         if global == top || global == 0 || top == 0 {
             return None;
         }
@@ -70,41 +96,19 @@ pub struct CapabilityLayout {
     pub extra_capabilities: usize,
 }
 
-impl Default for CapabilityLayout {
-    fn default() -> CapabilityLayout {
-        CapabilityLayout {
+impl CapabilityLayout {
+    /// Reads every offset out of the engine's own capability functions.
+    pub fn derive(set_proto_caps: Option<usize>, get_thread_caps: Option<usize>) -> Option<CapabilityLayout> {
+        let spc = set_proto_caps?;
+        let gtc = get_thread_caps?;
+        Some(CapabilityLayout {
             closure_is_c: 0x3,
             closure_proto: 0x18,
-            proto_userdata: 0x20,
-            proto_children: 0x50,
-            proto_child_count: 0x94,
-            extra_capabilities: 0x70,
-        }
-    }
-}
-
-impl CapabilityLayout {
-    /// Reads the offsets out of the two capability functions when they were resolved,
-    /// leaving each default in place when its signature was not matched.
-    pub fn derive(set_proto_caps: Option<usize>, get_thread_caps: Option<usize>) -> CapabilityLayout {
-        let mut layout = CapabilityLayout::default();
-        if let Some(spc) = set_proto_caps {
-            if let Some(offset) = decode_at(spc + SPC_USERDATA_STORE) {
-                layout.proto_userdata = offset;
-            }
-            if let Some(offset) = decode_at(spc + SPC_CHILD_COUNT_LOAD) {
-                layout.proto_child_count = offset;
-            }
-            if let Some(offset) = decode_at(spc + SPC_CHILDREN_LOAD) {
-                layout.proto_children = offset;
-            }
-        }
-        if let Some(gtc) = get_thread_caps {
-            if let Some(offset) = decode_at(gtc + GTC_CAPABILITIES_LOAD) {
-                layout.extra_capabilities = offset;
-            }
-        }
-        layout
+            proto_userdata: decode_at(spc + SPC_USERDATA_STORE)?,
+            proto_children: decode_at(spc + SPC_CHILDREN_LOAD)?,
+            proto_child_count: decode_at(spc + SPC_CHILD_COUNT_LOAD)?,
+            extra_capabilities: decode_at(gtc + GTC_CAPABILITIES_LOAD)?,
+        })
     }
 }
 
@@ -171,7 +175,26 @@ mod tests {
     }
 
     #[test]
-    fn caps_layout_falls_back_to_defaults_when_unresolved() {
-        assert_eq!(CapabilityLayout::derive(None, None), CapabilityLayout::default());
+    fn caps_layout_is_refused_when_the_functions_are_unresolved() {
+        assert!(CapabilityLayout::derive(None, None).is_none());
+        assert!(CapabilityLayout::derive(Some(0), None).is_none());
+        assert!(CapabilityLayout::derive(None, Some(0)).is_none());
+    }
+
+    #[test]
+    fn decodes_the_x86_builds_field_loads() {
+        assert_eq!(scan::decode_x86_load_offset([0x48, 0x8b, 0x43, 0x30, 0, 0, 0, 0]), Some(0x30));
+        assert_eq!(scan::decode_x86_load_offset([0x48, 0x8b, 0x53, 0x58, 0, 0, 0, 0]), Some(0x58));
+        assert_eq!(
+            scan::decode_x86_load_offset([0x48, 0x8b, 0x80, 0x28, 0x05, 0x00, 0x00, 0]),
+            Some(0x528)
+        );
+    }
+
+    #[test]
+    fn refuses_x86_bytes_that_are_not_a_field_load() {
+        assert!(scan::decode_x86_load_offset([0x55, 0x48, 0x89, 0xe5, 0, 0, 0, 0]).is_none());
+        assert!(scan::decode_x86_load_offset([0x48, 0x8b, 0x03, 0x30, 0, 0, 0, 0]).is_none());
+        assert!(scan::decode_x86_load_offset([0x48, 0x8b, 0x44, 0x24, 0x50, 0, 0, 0]).is_none());
     }
 }

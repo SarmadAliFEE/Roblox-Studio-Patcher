@@ -78,7 +78,7 @@ pub struct Primitives {
     pub new_thread: Option<usize>,
     pub security_context_current: Option<usize>,
     pub lua_top: usize,
-    pub caps: CapabilityLayout,
+    pub caps: Option<CapabilityLayout>,
 }
 
 pub fn read_value(addr: usize) -> Value {
@@ -239,7 +239,9 @@ pub fn run(shared: usize, primitives: &Primitives, source: &str, chunk: &str) ->
         None => shared,
     };
 
-    elevate_thread(lua_state, &primitives.caps);
+    if let Some(caps) = primitives.caps.as_ref() {
+        elevate_thread(lua_state, caps);
+    }
     if let Some(current) = primitives.security_context_current {
         elevate_security_context(current);
     }
@@ -264,10 +266,12 @@ pub fn run(shared: usize, primitives: &Primitives, source: &str, chunk: &str) ->
     let base = top - TVALUE_SIZE;
     let base_field = base_offset(lua_state, base, primitives.lua_top);
 
-    if let Ok(closure) = mem::read_ptr(base) {
-        elevate_closure(closure, &primitives.caps);
+    if let Some(caps) = primitives.caps.as_ref() {
+        if let Ok(closure) = mem::read_ptr(base) {
+            elevate_closure(closure, caps);
+        }
+        elevate_thread(lua_state, caps);
     }
-    elevate_thread(lua_state, &primitives.caps);
 
     let call: CallFn = unsafe { core::mem::transmute(primitives.call) };
     let status = unsafe { call(lua_state as *mut c_void, 0, 0) };

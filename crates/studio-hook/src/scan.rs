@@ -87,6 +87,9 @@ impl Pattern {
     /// survives a Studio update that only moves struct offsets. `None` when nothing
     /// concrete would be left to anchor on.
     pub fn relaxed(&self) -> Option<Pattern> {
+        if !cfg!(target_arch = "aarch64") {
+            return None;
+        }
         if self.bytes.len() % ARM64_INSTRUCTION != 0 {
             return None;
         }
@@ -225,6 +228,24 @@ pub const fn decode_arm64_load_offset(word: u32) -> Option<usize> {
     let scale = (word >> 30) & 0x3;
     let imm12 = ((word >> 10) & 0xfff) as usize;
     Some(imm12 << scale)
+}
+
+/// Byte offset encoded in an x86-64 `mov r64, [reg+disp]` (`REX.W 8B /r`), the form
+/// Studio's x86 builds use to load a struct field. `None` when `bytes` is not that form.
+pub fn decode_x86_load_offset(bytes: [u8; 8]) -> Option<usize> {
+    if bytes[0] & 0xf8 != 0x48 || bytes[1] != 0x8b {
+        return None;
+    }
+    let modrm = bytes[2];
+    let rm = modrm & 0x7;
+    if rm == 0b100 || rm == 0b101 {
+        return None;
+    }
+    match modrm >> 6 {
+        0b01 => Some(bytes[3] as usize),
+        0b10 => Some(u32::from_le_bytes([bytes[3], bytes[4], bytes[5], bytes[6]]) as usize),
+        _ => None,
+    }
 }
 
 pub fn decode_self_xor_ptr(storage_addr: usize, low: u32, high: u32) -> usize {

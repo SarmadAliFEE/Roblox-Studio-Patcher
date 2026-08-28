@@ -230,7 +230,7 @@ fn run_auto(target: &std::path::Path, macho_path: &std::path::Path, args: &Args)
         Err(e) => term::warn(&format!("skipped ({e}) - probably already patched")),
     }
 
-    if ask_feature(
+    if THEME_FEATURES && ask_feature(
         "enable custom theme support?",
         "patches the binary to load theme jsons off disk",
     ) {
@@ -240,7 +240,7 @@ fn run_auto(target: &std::path::Path, macho_path: &std::path::Path, args: &Args)
         }
     }
 
-    if ask_feature(
+    if THEME_FEATURES && ask_feature(
         "also apply RbxmPalette colors?",
         "recolors plugin bytecode that ignores the qt theme",
     ) {
@@ -250,7 +250,7 @@ fn run_auto(target: &std::path::Path, macho_path: &std::path::Path, args: &Args)
         }
     }
 
-    if ask_feature(
+    if THEME_FEATURES && ask_feature(
         "enable native hooks?",
         "adds a custom image behind the script editor",
     ) {
@@ -260,7 +260,7 @@ fn run_auto(target: &std::path::Path, macho_path: &std::path::Path, args: &Args)
         }
     }
 
-    if ask_feature(
+    if THEME_FEATURES && ask_feature(
         "enable window transparency hotkeys?",
         "hotkeys to fade studio's whole window in and out",
     ) {
@@ -302,6 +302,11 @@ fn main() {
         std::process::exit(1);
     }
 }
+
+/// The theme, palette and native-hook features write config the hook reads back from a
+/// fixed path. On linux Studio runs inside a wineprefix, so that path is not the host's -
+/// only the injected hook is supported there until the config path is prefix-aware.
+const THEME_FEATURES: bool = !cfg!(target_os = "linux");
 
 fn run() -> Result<()> {
     let args: Args = Args::parse();

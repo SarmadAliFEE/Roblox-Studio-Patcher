@@ -4,12 +4,12 @@ use anyhow::Result;
 
 use crate::Args;
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 const STUDIO_HOOK_PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/libstudio_hook_payload.dylib"));
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const STUDIO_HOOK_PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/studio_hook_payload.dll"));
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 fn install_payload(macho_path: &Path, args: &Args) -> Result<()> {
     use crate::{binary, inject, state, themes};
 
@@ -28,7 +28,7 @@ fn install_payload(macho_path: &Path, args: &Args) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn install_payload(exe_path: &Path, args: &Args) -> Result<()> {
     use anyhow::Context;
 

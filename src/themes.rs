@@ -11,7 +11,9 @@ use crate::Args;
 
 #[cfg(target_os = "windows")]
 pub const THEMES_DIR: &str = r"C:\Users\Public\rbxthemeset";
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+pub const THEMES_DIR: &str = "/var/tmp/rbxthemeset";
+#[cfg(target_os = "macos")]
 pub const THEMES_DIR: &str = "/Users/Shared/rbx-theme-set"; // gotta be exactly 27 bytes
 
 pub fn dark_json_path() -> PathBuf {

@@ -70,8 +70,41 @@ pub fn discover_candidates() -> Result<Vec<PathBuf>> {
     Ok(found.into_iter().map(|(_, path)| path).collect())
 }
 
+/// Lists Studio installs inside Vinegar's wineprefix, newest first.
+#[cfg(target_os = "linux")]
+pub fn discover_candidates() -> Result<Vec<PathBuf>> {
+    let home = std::env::var_os("HOME").context("no HOME env var")?;
+    let home = PathBuf::from(home);
+    let prefixes: Vec<PathBuf> = vec![
+        home.join(".local/share/vinegar/prefix"),
+        home.join(".var/app/org.vinegarhq.Vinegar/data/vinegar/prefix"),
+    ];
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for prefix in prefixes {
+        let users = prefix.join("drive_c/users");
+        let Ok(entries) = fs::read_dir(&users) else { continue };
+        for user in entries.flatten() {
+            let versions = user.path().join("AppData/Local/Roblox/Versions");
+            let Ok(builds) = fs::read_dir(&versions) else { continue };
+            for build in builds.flatten() {
+                let exe = build.path().join("RobloxStudioBeta.exe");
+                if !exe.exists() {
+                    continue;
+                }
+                let Ok(mtime) = fs::metadata(&exe).and_then(|m| m.modified()) else { continue };
+                found.push((mtime, exe));
+            }
+        }
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    if found.is_empty() {
+        bail!("no RobloxStudioBeta.exe in a vinegar prefix, pass --binary");
+    }
+    Ok(found.into_iter().map(|(_, path)| path).collect())
+}
+
 /// Lists Roblox Studio.app installs in the usual mac locations and via Spotlight.
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 pub fn discover_candidates() -> Result<Vec<PathBuf>> {
     let mut candidates: Vec<PathBuf> = vec![
         PathBuf::from("/Applications/RobloxStudio.app"),
@@ -149,9 +182,9 @@ pub fn resign(macho_path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const STUDIO_PROCESS_NAMES: &[&str] = &["RobloxStudioBeta.exe", "RobloxCrashHandler.exe", "StudioMCP.exe"];
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 const STUDIO_PROCESS_NAMES: &[&str] = &["RobloxStudio", "RobloxCrashHandler", "StudioMCP"];
 
 struct StudioProcess {
@@ -159,12 +192,12 @@ struct StudioProcess {
     path: PathBuf,
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 fn studio_root(hint_path: &Path) -> Option<PathBuf> {
     app_root(hint_path)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn studio_root(hint_path: &Path) -> Option<PathBuf> {
     hint_path
         .ancestors()

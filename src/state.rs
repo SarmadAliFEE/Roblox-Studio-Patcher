@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::{binary, inject, term, themes, Args};
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub const PAYLOAD_NAME: &str = "studio_hook.dll";
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub const PAYLOAD_NAME: &str = "studio_hook.dylib";

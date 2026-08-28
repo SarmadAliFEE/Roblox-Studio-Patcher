@@ -14,7 +14,9 @@ const REPO: &str = "uwufuzzywiiiaisddd/Roblox-Studio-Patcher";
 
 #[cfg(target_os = "windows")]
 const ASSET_NAME: &str = "Roblox-Studio-Patcher-windows.exe";
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+const ASSET_NAME: &str = "Roblox-Studio-Patcher-linux";
+#[cfg(target_os = "macos")]
 const ASSET_NAME: &str = "Roblox-Studio-Patcher-mac-silicon";
 
 struct Release {

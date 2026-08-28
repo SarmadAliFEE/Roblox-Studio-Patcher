@@ -9,27 +9,71 @@ use crate::binary::{backup, find_matches, is_pe, kill_running_studio, resign, Pa
 use crate::palette::ensure_palette_defaults;
 use crate::Args;
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub const THEMES_DIR: &str = r"C:\Users\Public\rbxthemeset";
-#[cfg(target_os = "linux")]
-pub const THEMES_DIR: &str = "/var/tmp/rbxthemeset";
 #[cfg(target_os = "macos")]
 pub const THEMES_DIR: &str = "/Users/Shared/rbx-theme-set"; // gotta be exactly 27 bytes
 
+#[cfg(target_os = "linux")]
+static HOST_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Points the config directory at the wineprefix the target studio runs in. `THEMES_DIR`
+#[cfg(target_os = "linux")]
+pub fn adopt_prefix_of(target: &Path) -> Option<PathBuf> {
+    let prefix: PathBuf = target.ancestors().find_map(|ancestor: &Path| {
+        let prefixes: PathBuf = ancestor.join("prefixes");
+        if !prefixes.is_dir() {
+            return None;
+        }
+        let studio: PathBuf = prefixes.join("studio");
+        if studio.is_dir() {
+            return Some(studio);
+        }
+        fs::read_dir(&prefixes).ok()?.flatten().next().map(|entry| entry.path())
+    })?;
+    let dir: PathBuf = prefix.join("drive_c/users/Public/rbxthemeset");
+    let _ = HOST_DIR.set(dir.clone());
+    Some(dir)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn adopt_prefix_of(_target: &Path) -> Option<PathBuf> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+pub fn host_dir() -> PathBuf {
+    HOST_DIR.get().cloned().unwrap_or_else(|| PathBuf::from("/var/tmp/rbxthemeset"))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn host_dir() -> PathBuf {
+    PathBuf::from(THEMES_DIR)
+}
+
+/// The path baked into the binary, which studio itself resolves.
+fn embedded_json_path(name: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("{THEMES_DIR}/{name}")
+    } else {
+        format!("{THEMES_DIR}\\{name}")
+    }
+}
+
 pub fn dark_json_path() -> PathBuf {
-    Path::new(THEMES_DIR).join("FoundationDarkTheme.json")
+    host_dir().join("FoundationDarkTheme.json")
 }
 
 pub fn light_json_path() -> PathBuf {
-    Path::new(THEMES_DIR).join("FoundationLightTheme.json")
+    host_dir().join("FoundationLightTheme.json")
 }
 
 pub fn editor_background_json_path() -> PathBuf {
-    Path::new(THEMES_DIR).join("EditorBackground.json")
+    host_dir().join("EditorBackground.json")
 }
 
 pub fn window_transparency_json_path() -> PathBuf {
-    Path::new(THEMES_DIR).join("WindowTransparency.json")
+    host_dir().join("WindowTransparency.json")
 }
 
 const EDITOR_BACKGROUND_DEFAULTS: &str = concat!(
@@ -64,9 +108,9 @@ const WINDOW_TRANSPARENCY_DEFAULTS: &str = concat!(
 );
 
 pub fn ensure_theme_jsons() -> Result<()> {
-    fs::create_dir_all(THEMES_DIR)?;
+    fs::create_dir_all(host_dir())?;
     for name in ["FoundationDarkTheme.json", "FoundationLightTheme.json"] {
-        let dest: PathBuf = Path::new(THEMES_DIR).join(name);
+        let dest: PathBuf = host_dir().join(name);
         if dest.exists() {
             continue;
         }
@@ -80,7 +124,7 @@ pub fn ensure_theme_jsons() -> Result<()> {
             .status()?
             .success();
         if !ok {
-            bail!("couldn't grab {name}, drop your own copy in {THEMES_DIR}");
+            bail!("couldn't grab {name}, drop your own copy in {}", host_dir().display());
         }
     }
 
@@ -147,7 +191,7 @@ fn merge_missing(local: &mut Value, upstream: &Value) -> usize {
 
 pub fn sync_theme_jsons() {
     for name in THEME_NAMES {
-        let dest: PathBuf = Path::new(THEMES_DIR).join(name);
+        let dest: PathBuf = host_dir().join(name);
         let Ok(raw) = fs::read_to_string(&dest) else {
             continue;
         };
@@ -207,8 +251,8 @@ mod tests {
 }
 
 pub fn run_themes(macho_path: &Path, args: &Args) -> Result<()> {
-    let dark_new: String = dark_json_path().to_string_lossy().into_owned();
-    let light_new: String = light_json_path().to_string_lossy().into_owned();
+    let dark_new: String = embedded_json_path("FoundationDarkTheme.json");
+    let light_new: String = embedded_json_path("FoundationLightTheme.json");
     let swaps: [(&str, &str); 2] = [
         (
             ":/Platform/Base/QtUI/themes/FoundationDarkTheme.json",
@@ -259,7 +303,7 @@ pub fn run_themes(macho_path: &Path, args: &Args) -> Result<()> {
     ensure_theme_jsons()?;
     sync_theme_jsons();
     ensure_palette_defaults(&dark_json_path())?;
-    println!("edit the jsons in {THEMES_DIR} then relaunch studio");
+    println!("edit the jsons in {} then relaunch studio", host_dir().display());
 
     #[cfg(not(target_os = "windows"))]
     {

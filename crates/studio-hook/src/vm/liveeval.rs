@@ -1,18 +1,24 @@
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::mem;
 use crate::vm::exec::{self, Primitives};
 
-const REQUEST_PATH: &str = "/Users/Shared/rbx-theme-set/LiveEval.luau";
-const RESULT_PATH: &str = "/Users/Shared/rbx-theme-set/LiveEval.out";
-const POKE_PATH: &str = "/Users/Shared/rbx-theme-set/Poke.txt";
-const POKE_RESULT_PATH: &str = "/Users/Shared/rbx-theme-set/Poke.out";
+#[cfg(target_os = "macos")]
+fn file(name: &str) -> PathBuf {
+    PathBuf::from("/Users/Shared/rbx-theme-set").join(name)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn file(name: &str) -> PathBuf {
+    crate::log_dir().join(name)
+}
 
 static LAST_EVAL_MTIME: AtomicU64 = AtomicU64::new(0);
 static LAST_POKE_MTIME: AtomicU64 = AtomicU64::new(0);
 
-fn mtime_secs(path: &str) -> Option<u64> {
+fn mtime_secs(path: &std::path::Path) -> Option<u64> {
     let meta = std::fs::metadata(path).ok()?;
     let modified = meta.modified().ok()?;
     modified.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs())
@@ -28,16 +34,17 @@ pub fn tick(lua_state: usize, primitives: &Primitives) {
 }
 
 fn run_eval(lua_state: usize, primitives: &Primitives) {
-    let Some(mtime) = mtime_secs(REQUEST_PATH) else { return };
+    let request = file("LiveEval.luau");
+    let Some(mtime) = mtime_secs(&request) else { return };
     if LAST_EVAL_MTIME.swap(mtime, Ordering::Relaxed) == mtime {
         return;
     }
-    let Ok(source) = std::fs::read_to_string(REQUEST_PATH) else { return };
+    let Ok(source) = std::fs::read_to_string(&request) else { return };
     let body = match exec::run(lua_state, primitives, &source, "=LiveEval") {
         Ok(values) => values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\n"),
         Err(err) => format!("error: {err:?}"),
     };
-    let _ = std::fs::write(RESULT_PATH, format!("[{}] lua_state={lua_state:#x}\n{body}\n", now_secs()));
+    let _ = std::fs::write(file("LiveEval.out"), format!("[{}] lua_state={lua_state:#x}\n{body}\n", now_secs()));
 }
 
 fn parse_hex(token: &str) -> Option<usize> {
@@ -51,11 +58,12 @@ fn parse_hex(token: &str) -> Option<usize> {
 /// global; `r <addr> <len>` dumps bytes; `w <addr> <u64hex>` writes a word; `p <addr>`
 /// reads a pointer. Lets the caps layout be probed without rebuilding.
 fn run_poke(lua_state: usize) {
-    let Some(mtime) = mtime_secs(POKE_PATH) else { return };
+    let poke = file("Poke.txt");
+    let Some(mtime) = mtime_secs(&poke) else { return };
     if LAST_POKE_MTIME.swap(mtime, Ordering::Relaxed) == mtime {
         return;
     }
-    let Ok(text) = std::fs::read_to_string(POKE_PATH) else { return };
+    let Ok(text) = std::fs::read_to_string(&poke) else { return };
     let mut out = format!("[{}] lua_state={lua_state:#x}\n", now_secs());
     for line in text.lines() {
         let line = line.trim();
@@ -93,5 +101,5 @@ fn run_poke(lua_state: usize) {
             _ => out.push_str("  ? unknown command\n"),
         }
     }
-    let _ = std::fs::write(POKE_RESULT_PATH, out);
+    let _ = std::fs::write(file("Poke.out"), out);
 }

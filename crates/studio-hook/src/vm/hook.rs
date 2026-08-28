@@ -139,6 +139,8 @@ pub fn install() -> Result<usize, InstallError> {
         (resolved.luau_load, resolved.call_dispatch, probe)
     {
         let caps = CapabilityLayout::derive(resolved.set_proto_caps, resolved.get_thread_caps);
+        #[cfg(target_os = "windows")]
+        let caps = caps.or_else(CapabilityLayout::windows_probe);
         match caps {
             Some(caps) => crate::log(&format!(
                 "layout: caps proto_userdata=+{:#x} children=+{:#x} count=+{:#x} extra_caps=+{:#x}",

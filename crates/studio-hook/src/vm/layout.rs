@@ -126,6 +126,18 @@ impl CapabilityLayout {
             extra_capabilities: decode_at(gtc + GTC_CAPABILITIES_LOAD)?,
         })
     }
+
+    #[cfg(target_os = "windows")]
+    pub fn windows_probe() -> Option<CapabilityLayout> {
+        Some(CapabilityLayout {
+            closure_is_c: 0x3,
+            closure_proto: 0x18,
+            proto_userdata: 0x20,
+            proto_children: 0x50,
+            proto_child_count: 0x94,
+            extra_capabilities: 0x70,
+        })
+    }
 }
 
 #[cfg(target_arch = "aarch64")]

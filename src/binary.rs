@@ -205,7 +205,31 @@ fn studio_root(hint_path: &Path) -> Option<PathBuf> {
         .or_else(|| hint_path.parent().map(Into::into))
 }
 
-#[cfg(not(target_os = "windows"))]
+/// Wine renames the studio process, so its `comm` is not the executable name and only
+/// the full command line still carries it.
+#[cfg(target_os = "linux")]
+fn find_studio_processes(root: Option<&Path>) -> Result<Vec<StudioProcess>> {
+    let out: std::process::Output = Command::new("ps").args(["-Ao", "pid=,args="]).output()?;
+    let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stdout);
+    let mut found: Vec<StudioProcess> = vec![];
+    for line in text.lines() {
+        let trimmed: &str = line.trim();
+        let Some(sp) = trimmed.find(char::is_whitespace) else { continue };
+        let (pid_str, rest): (&str, &str) = trimmed.split_at(sp);
+        let Ok(pid) = pid_str.parse::<u32>() else { continue };
+        let args: &str = rest.trim();
+        let matched: bool = match root {
+            Some(r) => args.contains(&*r.to_string_lossy()),
+            None => STUDIO_PROCESS_NAMES.iter().any(|n: &&str| args.contains(n)),
+        };
+        if matched {
+            found.push(StudioProcess { pid, path: PathBuf::from(args.split_whitespace().next().unwrap_or(args)) });
+        }
+    }
+    Ok(found)
+}
+
+#[cfg(target_os = "macos")]
 fn find_studio_processes(root: Option<&Path>) -> Result<Vec<StudioProcess>> {
     let out: std::process::Output = Command::new("ps").args(["-Ao", "pid=,comm="]).output()?;
     let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stdout);

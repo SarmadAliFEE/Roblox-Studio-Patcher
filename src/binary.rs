@@ -75,30 +75,25 @@ pub fn discover_candidates() -> Result<Vec<PathBuf>> {
 pub fn discover_candidates() -> Result<Vec<PathBuf>> {
     let home = std::env::var_os("HOME").context("no HOME env var")?;
     let home = PathBuf::from(home);
-    let prefixes: Vec<PathBuf> = vec![
-        home.join(".local/share/vinegar/prefix"),
-        home.join(".var/app/org.vinegarhq.Vinegar/data/vinegar/prefix"),
+    let roots: Vec<PathBuf> = vec![
+        home.join(".var/app/org.vinegarhq.Vinegar/data/vinegar/versions"),
+        home.join(".local/share/vinegar/versions"),
     ];
     let mut found: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
-    for prefix in prefixes {
-        let users = prefix.join("drive_c/users");
-        let Ok(entries) = fs::read_dir(&users) else { continue };
-        for user in entries.flatten() {
-            let versions = user.path().join("AppData/Local/Roblox/Versions");
-            let Ok(builds) = fs::read_dir(&versions) else { continue };
-            for build in builds.flatten() {
-                let exe = build.path().join("RobloxStudioBeta.exe");
-                if !exe.exists() {
-                    continue;
-                }
-                let Ok(mtime) = fs::metadata(&exe).and_then(|m| m.modified()) else { continue };
-                found.push((mtime, exe));
+    for root in roots {
+        let Ok(builds) = fs::read_dir(&root) else { continue };
+        for build in builds.flatten() {
+            let exe = build.path().join("RobloxStudioBeta.exe");
+            if !exe.exists() {
+                continue;
             }
+            let Ok(mtime) = fs::metadata(&exe).and_then(|m| m.modified()) else { continue };
+            found.push((mtime, exe));
         }
     }
     found.sort_by(|a, b| b.0.cmp(&a.0));
     if found.is_empty() {
-        bail!("no RobloxStudioBeta.exe in a vinegar prefix, pass --binary");
+        bail!("no RobloxStudioBeta.exe in a vinegar versions dir, pass --binary");
     }
     Ok(found.into_iter().map(|(_, path)| path).collect())
 }

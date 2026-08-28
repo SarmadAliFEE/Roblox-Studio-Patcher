@@ -5,10 +5,14 @@ use crate::scan;
 const CALL_DISPATCH_GLOBAL_LOAD: usize = 36;
 #[cfg(target_arch = "aarch64")]
 const CALL_DISPATCH_TOP_LOAD: usize = 52;
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(all(not(target_arch = "aarch64"), target_os = "macos"))]
 const CALL_DISPATCH_GLOBAL_LOAD: usize = 0x1c;
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(all(not(target_arch = "aarch64"), target_os = "macos"))]
 const CALL_DISPATCH_TOP_LOAD: usize = 0x31;
+#[cfg(all(not(target_arch = "aarch64"), target_os = "windows"))]
+const CALL_DISPATCH_GLOBAL_LOAD: usize = 0x1c;
+#[cfg(all(not(target_arch = "aarch64"), target_os = "windows"))]
+const CALL_DISPATCH_TOP_LOAD: usize = 0x36;
 const LUA_THREAD_TAG: u8 = 0x0a;
 const MAIN_THREAD_TO_GLOBAL: usize = 0x80;
 

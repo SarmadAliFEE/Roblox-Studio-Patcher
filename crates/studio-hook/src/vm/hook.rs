@@ -7,7 +7,7 @@ use crate::discord::presence::Presence;
 use crate::platform;
 use crate::vm::discovery::{Discovery, Ready, Vtables};
 use crate::vm::exec::Primitives;
-use crate::vm::layout::LuaProbe;
+use crate::vm::layout::{CapabilityLayout, LuaProbe};
 use crate::vm::resolve::{self, ResolveError};
 
 type StepFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void;
@@ -122,12 +122,18 @@ pub fn install() -> Result<usize, InstallError> {
     if let (Some(load), Some(call), Some(probe)) =
         (resolved.luau_load, resolved.call_dispatch, probe)
     {
+        let caps = CapabilityLayout::derive(resolved.set_proto_caps, resolved.get_thread_caps);
+        crate::log(&format!(
+            "layout: caps proto_userdata=+{:#x} children=+{:#x} count=+{:#x} extra_caps=+{:#x}",
+            caps.proto_userdata, caps.proto_children, caps.proto_child_count, caps.extra_capabilities
+        ));
         *PRIMITIVES.lock().unwrap_or_else(|p| p.into_inner()) = Some(Primitives {
             load,
             call,
             new_thread: resolved.lua_newthread,
             security_context_current: resolved.security_context_current,
             lua_top: probe.top,
+            caps,
         });
         *PRESENCE.lock().unwrap_or_else(|p| p.into_inner()) = crate::discord::start();
     } else {

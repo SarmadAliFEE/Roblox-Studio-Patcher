@@ -4,11 +4,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::mem;
 use luau_compile::{self as luau, CompileError};
 
-pub const CLOSURE_IS_C: usize = 0x3;
-pub const CLOSURE_PROTO: usize = 0x18;
-pub const PROTO_CHILDREN: usize = 0x50;
-pub const PROTO_CHILD_COUNT: usize = 0x94;
-pub const PROTO_CAPABILITY_RECORD: usize = 0x20;
+use crate::vm::layout::CapabilityLayout;
+
 pub const CONTEXT_CACHED_CAPABILITIES: usize = 0x28;
 pub const CONTEXT_LAZY_FN: usize = 0x30;
 
@@ -81,6 +78,7 @@ pub struct Primitives {
     pub new_thread: Option<usize>,
     pub security_context_current: Option<usize>,
     pub lua_top: usize,
+    pub caps: CapabilityLayout,
 }
 
 pub fn read_value(addr: usize) -> Value {
@@ -111,45 +109,36 @@ fn read_string(addr: usize) -> Value {
     Value::Str(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// Nulls a proto's capability-record pointer over the whole child tree. The engine's
-/// capability getter returns the full set when the record is null, so clearing it grants
-/// every capability to the loaded chunk - the same recursion the engine uses to stamp a
-/// privileged thread, run in reverse.
-pub fn elevate_proto_tree(proto: usize, depth: usize) {
+/// Points a proto and its sub-protos at the full capability set by writing the address of
+/// a static capability word into `proto->userdata`, the field the engine reads when
+/// deriving a running frame's granted capabilities.
+pub fn elevate_proto_tree(proto: usize, depth: usize, caps: &CapabilityLayout) {
     if proto == 0 || depth > MAX_PROTO_DEPTH {
         return;
     }
-    let Ok(count) = mem::read::<i32>(proto + PROTO_CHILD_COUNT) else { return };
+    let Ok(count) = mem::read::<i32>(proto + caps.proto_child_count) else { return };
     if !(0..=MAX_PROTO_CHILDREN).contains(&count) {
         return;
     }
-    if let Ok(record) = mem::read::<usize>(proto + PROTO_CAPABILITY_RECORD) {
-        if mem::looks_like_pointer(record) {
-            let _ = mem::write::<usize>(proto + PROTO_CAPABILITY_RECORD, 0);
-            if PROTO_CLEARS.fetch_add(1, Ordering::Relaxed) < 3 {
-                crate::log(&format!(
-                    "elevate: proto {proto:#x} capability record {record:#x} -> null"
-                ));
-            }
-        }
-    }
+    let grant = &PLUGIN_CAPABILITIES as *const u64 as usize;
+    let _ = mem::write::<usize>(proto + caps.proto_userdata, grant);
     if count == 0 {
         return;
     }
-    let Ok(children) = mem::read_ptr(proto + PROTO_CHILDREN) else { return };
+    let Ok(children) = mem::read_ptr(proto + caps.proto_children) else { return };
     for index in 0..count as usize {
         let Ok(child) = mem::read_ptr(children + index * 8) else { continue };
-        elevate_proto_tree(child, depth + 1);
+        elevate_proto_tree(child, depth + 1, caps);
     }
 }
 
-pub fn elevate_closure(closure: usize) {
-    let Ok(is_c) = mem::read::<u8>(closure + CLOSURE_IS_C) else { return };
+pub fn elevate_closure(closure: usize, caps: &CapabilityLayout) {
+    let Ok(is_c) = mem::read::<u8>(closure + caps.closure_is_c) else { return };
     if is_c != 0 {
         return;
     }
-    let Ok(proto) = mem::read_ptr(closure + CLOSURE_PROTO) else { return };
-    elevate_proto_tree(proto, 0);
+    let Ok(proto) = mem::read_ptr(closure + caps.closure_proto) else { return };
+    elevate_proto_tree(proto, 0, caps);
 }
 
 pub fn elevate_security_context(current: usize) -> bool {
@@ -166,9 +155,8 @@ pub fn elevate_security_context(current: usize) -> bool {
 static LUA_BASE_OFFSET: AtomicUsize = AtomicUsize::new(BASE_UNKNOWN);
 static LUA_EXTRA_SPACE_OFFSET: AtomicUsize = AtomicUsize::new(BASE_UNKNOWN);
 static CAPABILITY_REFUSALS: AtomicUsize = AtomicUsize::new(0);
-static PROTO_CLEARS: AtomicUsize = AtomicUsize::new(0);
-const EXTRA_SPACE_CAPABILITIES: usize = 0x70;
-const FULL_CAPABILITIES: u64 = 0x3fff_ffff_ffff_ff00;
+const FULL_CAPABILITIES: u64 = 0xcc00_000f_ffff_ff3f;
+static PLUGIN_CAPABILITIES: u64 = FULL_CAPABILITIES;
 
 /// Records where `L->userdata` lives once a thread and its ScriptContext prove the
 /// chain. Until this succeeds `elevate_thread` writes nothing.
@@ -187,18 +175,19 @@ pub fn calibrate_extra_space(lua_state: usize, script_context: usize) {
 /// The slot is only written when it does not currently hold something pointer-shaped:
 /// a capability mask is far above the user address space, so this refuses to smash a
 /// neighbouring object if the offset is ever wrong for a build.
-pub fn elevate_thread(lua_state: usize) -> bool {
+pub fn elevate_thread(lua_state: usize, caps: &CapabilityLayout) -> bool {
     let offset = LUA_EXTRA_SPACE_OFFSET.load(Ordering::Relaxed);
     if offset == BASE_UNKNOWN {
         return false;
     }
     let Ok(extra) = mem::read_ptr(lua_state + offset) else { return false };
-    let slot = extra + EXTRA_SPACE_CAPABILITIES;
+    let slot = extra + caps.extra_capabilities;
     let Ok(current) = mem::read::<u64>(slot) else { return false };
     if mem::looks_like_pointer(current as usize) {
         if CAPABILITY_REFUSALS.fetch_add(1, Ordering::Relaxed) == 0 {
             crate::log(&format!(
-                "layout: capability slot at extra+{EXTRA_SPACE_CAPABILITIES:#x} holds {current:#x}, refusing to write"
+                "layout: capability slot at extra+{:#x} holds {current:#x}, refusing to write",
+                caps.extra_capabilities
             ));
         }
         return false;
@@ -250,6 +239,11 @@ pub fn run(shared: usize, primitives: &Primitives, source: &str, chunk: &str) ->
         None => shared,
     };
 
+    elevate_thread(lua_state, &primitives.caps);
+    if let Some(current) = primitives.security_context_current {
+        elevate_security_context(current);
+    }
+
     let name = std::ffi::CString::new(chunk).unwrap_or_else(|_| c"=chunk".to_owned());
     let load: LoadFn = unsafe { core::mem::transmute(primitives.load) };
     let status = unsafe {
@@ -271,12 +265,9 @@ pub fn run(shared: usize, primitives: &Primitives, source: &str, chunk: &str) ->
     let base_field = base_offset(lua_state, base, primitives.lua_top);
 
     if let Ok(closure) = mem::read_ptr(base) {
-        elevate_closure(closure);
+        elevate_closure(closure, &primitives.caps);
     }
-    elevate_thread(lua_state);
-    if let Some(current) = primitives.security_context_current {
-        elevate_security_context(current);
-    }
+    elevate_thread(lua_state, &primitives.caps);
 
     let call: CallFn = unsafe { core::mem::transmute(primitives.call) };
     let status = unsafe { call(lua_state as *mut c_void, 0, 0) };

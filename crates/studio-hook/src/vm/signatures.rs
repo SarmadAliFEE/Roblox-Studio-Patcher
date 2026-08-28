@@ -47,6 +47,19 @@ mod arch {
     );
 
     pub const CAN_ACCESS_RESTRICTED_BL: usize = 0x18;
+
+    pub const SET_PROTO_CAPS: &str = concat!(
+        "01 ?? ?? f9 08 ?? ?? b9 1f 05 00 71 ?? ?? ?? 54 ",
+        "f6 57 bd a9 f4 4f 01 a9 fd 7b 02 a9 fd 83 00 91 ",
+        "f3 03 01 aa f4 03 00 aa 15 00 80 d2 88 ?? ?? f9 ",
+        "00 79 75 f8",
+    );
+
+    pub const GET_THREAD_CAPS: &str = concat!(
+        "f6 57 bd a9 f4 4f 01 a9 fd 7b 02 a9 fd 83 00 91 ",
+        "f3 03 00 aa ?? ?? ?? 94 f4 03 00 aa 15 ?? ?? f9 ",
+        "?? ?? ?? b4 68 ?? ?? f9 16 ?? ?? f9 e0 03 13 aa",
+    );
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -84,6 +97,8 @@ mod arch {
         "48 89 43 28 48 c7 43 30 00 00 00 00 0f b6 43 28",
     );
     pub const CAN_ACCESS_RESTRICTED_BL: usize = 0x5;
+    pub const SET_PROTO_CAPS: &str = "";
+    pub const GET_THREAD_CAPS: &str = "";
 }
 
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
@@ -121,6 +136,8 @@ mod arch {
     );
 
     pub const CAN_ACCESS_RESTRICTED_BL: usize = 0x10;
+    pub const SET_PROTO_CAPS: &str = "";
+    pub const GET_THREAD_CAPS: &str = "";
 }
 
 pub use arch::*;

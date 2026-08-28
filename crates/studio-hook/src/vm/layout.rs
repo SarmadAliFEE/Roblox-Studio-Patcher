@@ -53,6 +53,67 @@ impl LuaProbe {
     }
 }
 
+const SPC_USERDATA_STORE: usize = 0;
+const SPC_CHILD_COUNT_LOAD: usize = 4;
+const SPC_CHILDREN_LOAD: usize = 44;
+const GTC_CAPABILITIES_LOAD: usize = 40;
+
+/// Struct offsets used when granting a loaded chunk full capabilities, recovered from the
+/// engine's own `setProtoCapabilities` and `getThreadCapabilities` 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapabilityLayout {
+    pub closure_is_c: usize,
+    pub closure_proto: usize,
+    pub proto_userdata: usize,
+    pub proto_children: usize,
+    pub proto_child_count: usize,
+    pub extra_capabilities: usize,
+}
+
+impl Default for CapabilityLayout {
+    fn default() -> CapabilityLayout {
+        CapabilityLayout {
+            closure_is_c: 0x3,
+            closure_proto: 0x18,
+            proto_userdata: 0x20,
+            proto_children: 0x50,
+            proto_child_count: 0x94,
+            extra_capabilities: 0x70,
+        }
+    }
+}
+
+impl CapabilityLayout {
+    /// Reads the offsets out of the two capability functions when they were resolved,
+    /// leaving each default in place when its signature was not matched.
+    pub fn derive(set_proto_caps: Option<usize>, get_thread_caps: Option<usize>) -> CapabilityLayout {
+        let mut layout = CapabilityLayout::default();
+        if let Some(spc) = set_proto_caps {
+            if let Some(offset) = decode_at(spc + SPC_USERDATA_STORE) {
+                layout.proto_userdata = offset;
+            }
+            if let Some(offset) = decode_at(spc + SPC_CHILD_COUNT_LOAD) {
+                layout.proto_child_count = offset;
+            }
+            if let Some(offset) = decode_at(spc + SPC_CHILDREN_LOAD) {
+                layout.proto_children = offset;
+            }
+        }
+        if let Some(gtc) = get_thread_caps {
+            if let Some(offset) = decode_at(gtc + GTC_CAPABILITIES_LOAD) {
+                layout.extra_capabilities = offset;
+            }
+        }
+        layout
+    }
+}
+
+fn decode_at(instruction_addr: usize) -> Option<usize> {
+    let word: u32 = mem::read(instruction_addr).ok()?;
+    let offset = scan::decode_arm64_load_offset(word)?;
+    (offset != 0).then_some(offset)
+}
+
 const EXTRA_SPACE_SHARED: usize = 0x18;
 const CONTEXT_SCAN: usize = 0x80;
 const FIELD_SCAN: usize = 0x100;
@@ -99,5 +160,18 @@ mod tests {
     #[test]
     fn refuses_when_both_offsets_collapse_to_the_same_field() {
         assert!(LuaProbe::from_words(0xf9401668, 0xf9401668).is_none());
+    }
+
+    #[test]
+    fn decodes_capability_offsets_from_the_engines_instructions() {
+        assert_eq!(scan::decode_arm64_load_offset(0xf9001001), Some(0x20));
+        assert_eq!(scan::decode_arm64_load_offset(0xb9409408), Some(0x94));
+        assert_eq!(scan::decode_arm64_load_offset(0xf9402a88), Some(0x50));
+        assert_eq!(scan::decode_arm64_load_offset(0xf9403916), Some(0x70));
+    }
+
+    #[test]
+    fn caps_layout_falls_back_to_defaults_when_unresolved() {
+        assert_eq!(CapabilityLayout::derive(None, None), CapabilityLayout::default());
     }
 }

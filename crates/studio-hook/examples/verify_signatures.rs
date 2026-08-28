@@ -108,6 +108,8 @@ fn main() {
         ("TASK_DEFER", sig::TASK_DEFER),
         ("LUA_NEWTHREAD", sig::LUA_NEWTHREAD),
         ("CAN_ACCESS_RESTRICTED", sig::CAN_ACCESS_RESTRICTED),
+        ("SET_PROTO_CAPS", sig::SET_PROTO_CAPS),
+        ("GET_THREAD_CAPS", sig::GET_THREAD_CAPS),
     ] {
         ok &= check(name, spec, text, bytes);
     }

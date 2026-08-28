@@ -8,9 +8,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(400);
 const ZERO_PLACE_DEBOUNCE: u32 = 2;
 
 const RUNNING_SCRIPT: &str = r#"
-local running = false
-pcall(function() running = game:GetService("RunService"):IsRunning() end)
-return tostring(running)
+local ok, running = pcall(function() return game:GetService("RunService"):IsRunning() end)
+return (ok and running) and "true" or "false"
 "#;
 
 const POLL_SCRIPT: &str = r#"
@@ -137,8 +136,8 @@ impl Presence {
         self.ipc.set_activity(activity);
     }
 
-    /// Asks one VM whether its DataModel is running a test. Studio hosts the play session
-    /// in a DataModel of its own, so this has to be asked of a VM other than the edit one.
+    /// Asks `lua_state` whether its DataModel is running a test. Only sound when called from
+    /// that DataModel's own step, so Studio's DataModel lock serialises access to the VM.
     pub fn probe_running(lua_state: usize, primitives: &Primitives) -> bool {
         match exec::run(lua_state, primitives, RUNNING_SCRIPT, "=DiscordRunProbe") {
             Ok(values) => matches!(values.into_iter().next(), Some(Value::Str(flag)) if flag == "true"),

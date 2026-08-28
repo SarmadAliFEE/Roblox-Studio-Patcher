@@ -35,7 +35,7 @@ unsafe extern "C" fn hooked_step(job: *mut c_void, stats: *mut c_void) -> *mut c
 }
 
 enum Action {
-    Poll(Ready, bool),
+    Poll(Ready, bool, Option<usize>),
     Idle,
     Hold,
 }
@@ -47,19 +47,22 @@ fn observe(job: usize) {
         let Some(discovery) = slot.as_mut() else { return };
         discovery.on_step(job, now);
         match discovery.edit(now) {
-            Some(ready) if ready.job == job => Action::Poll(ready, discovery.play_test_active(now)),
+            Some(ready) if ready.job == job => {
+                let probe = discovery.next_running_probe(&ready, now);
+                Action::Poll(ready, discovery.play_test_active(now), probe)
+            }
             Some(_) => Action::Hold,
             None => Action::Idle,
         }
     };
     match action {
-        Action::Poll(ready, play_test) => drive_presence(ready, play_test),
+        Action::Poll(ready, play_test, probe) => drive_presence(ready, play_test, probe),
         Action::Idle => drive_idle(),
         Action::Hold => {}
     }
 }
 
-fn drive_presence(ready: Ready, play_test: bool) {
+fn drive_presence(ready: Ready, play_test: bool, probe: Option<usize>) {
     let keep = {
         let Ok(mut presence_slot) = PRESENCE.try_lock() else { return };
         let Some(presence) = presence_slot.as_mut() else { return };
@@ -68,6 +71,19 @@ fn drive_presence(ready: Ready, play_test: bool) {
         crate::vm::liveeval::tick(ready.lua_state, primitives);
         presence.on_tick(ready.lua_state, primitives, play_test)
     };
+
+    if let Some(candidate) = probe {
+        let running = {
+            let Ok(primitives_slot) = PRIMITIVES.try_lock() else { return };
+            let Some(primitives) = primitives_slot.as_ref() else { return };
+            Presence::probe_running(candidate, primitives)
+        };
+        if let Ok(mut slot) = DISCOVERY.try_lock() {
+            if let Some(discovery) = slot.as_mut() {
+                discovery.note_running(running, Instant::now());
+            }
+        }
+    }
     if keep {
         return;
     }

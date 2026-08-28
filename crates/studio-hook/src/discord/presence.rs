@@ -7,6 +7,12 @@ use crate::vm::exec::{self, Primitives, Value};
 const POLL_INTERVAL: Duration = Duration::from_millis(400);
 const ZERO_PLACE_DEBOUNCE: u32 = 2;
 
+const RUNNING_SCRIPT: &str = r#"
+local running = false
+pcall(function() running = game:GetService("RunService"):IsRunning() end)
+return tostring(running)
+"#;
+
 const POLL_SCRIPT: &str = r#"
 local place = tostring(game.PlaceId)
 local universe = tostring(game.GameId)
@@ -129,6 +135,15 @@ impl Presence {
         ));
         self.last_activity = Some(activity.clone());
         self.ipc.set_activity(activity);
+    }
+
+    /// Asks one VM whether its DataModel is running a test. Studio hosts the play session
+    /// in a DataModel of its own, so this has to be asked of a VM other than the edit one.
+    pub fn probe_running(lua_state: usize, primitives: &Primitives) -> bool {
+        match exec::run(lua_state, primitives, RUNNING_SCRIPT, "=DiscordRunProbe") {
+            Ok(values) => matches!(values.into_iter().next(), Some(Value::Str(flag)) if flag == "true"),
+            Err(_) => false,
+        }
     }
 
     fn poll(&self, lua_state: usize, primitives: &Primitives) -> Option<Poll> {

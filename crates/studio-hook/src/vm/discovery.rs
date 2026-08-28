@@ -11,6 +11,7 @@ pub const MAX_TRACKED: usize = 24;
 const DATA_MODEL_FIELDS: usize = 0x40;
 const PLACELESS_STRIKES: u32 = 3;
 pub const PLACELESS_COOLDOWN: Duration = Duration::from_millis(15000);
+const PROBE_INTERVAL: Duration = Duration::from_millis(1000);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Vtables {
@@ -80,11 +81,52 @@ pub struct Discovery {
     jobs: Vec<Tracked>,
     live_edit: Option<usize>,
     capture: Option<Ready>,
+    probe_cursor: usize,
+    last_probe: Option<Instant>,
+    running_until: Option<Instant>,
 }
 
 impl Discovery {
     pub fn new(vtables: Vtables, probe: LuaProbe) -> Discovery {
-        Discovery { vtables, probe, jobs: Vec::new(), live_edit: None, capture: None }
+        Discovery {
+            vtables,
+            probe,
+            jobs: Vec::new(),
+            live_edit: None,
+            capture: None,
+            probe_cursor: 0,
+            last_probe: None,
+            running_until: None,
+        }
+    }
+
+    /// Hands back a VM belonging to a different DataModel than `capture`, rotating through
+    /// the tracked jobs. Studio runs a play session in its own DataModel, so whether a test
+    /// is running can only be seen from a VM other than the edit one being polled.
+    pub fn next_running_probe(&mut self, capture: &Ready, now: Instant) -> Option<usize> {
+        if self.last_probe.map(|at| now.duration_since(at) < PROBE_INTERVAL).unwrap_or(false) {
+            return None;
+        }
+        let candidates: Vec<usize> = self
+            .jobs
+            .iter()
+            .filter(|job| job.data_model != Some(capture.data_model))
+            .filter(|job| now.duration_since(job.last_seen) < STALE_AFTER)
+            .filter_map(Tracked::current_lua_state)
+            .filter(|state| self.probe.looks_like_lua_state(*state))
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        self.last_probe = Some(now);
+        self.probe_cursor = self.probe_cursor.wrapping_add(1) % candidates.len();
+        Some(candidates[self.probe_cursor])
+    }
+
+    pub fn note_running(&mut self, running: bool, now: Instant) {
+        if running {
+            self.running_until = Some(now + PLAY_TEST_RECENT);
+        }
     }
 
     /// Records that `lua_state` polled without a place, so a Studio session holding
@@ -137,8 +179,8 @@ impl Discovery {
             && self.probe.looks_like_lua_state(ready.lua_state)
     }
 
-    pub fn play_test_active(&self, _now: Instant) -> bool {
-        false
+    pub fn play_test_active(&self, now: Instant) -> bool {
+        self.running_until.map(|until| now < until).unwrap_or(false)
     }
 
     fn slot_for(&mut self, job: usize, now: Instant) -> usize {
@@ -301,6 +343,19 @@ mod tests {
         let discovery = Discovery::new(vtables(), probe());
         assert!(discovery.edit(Instant::now()).is_none());
         assert!(!discovery.play_test_active(Instant::now()));
+    }
+
+    #[test]
+    fn a_running_report_expires_once_the_test_stops() {
+        let now = Instant::now();
+        let mut discovery = Discovery::new(vtables(), probe());
+
+        discovery.note_running(true, now);
+        assert!(discovery.play_test_active(now));
+        assert!(!discovery.play_test_active(now + PLAY_TEST_RECENT));
+
+        discovery.note_running(false, now + PLAY_TEST_RECENT);
+        assert!(!discovery.play_test_active(now + PLAY_TEST_RECENT));
     }
 
     #[test]
